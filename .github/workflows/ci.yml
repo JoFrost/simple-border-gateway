@@ -44,5 +44,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      # as the feature ring and aws_lc_rs are mutually exclusive, we have to run it twice.
+      - name: Clippy (aws_lc_rs)
+        run: cargo clippy --no-default-features --features aws_lc_rs -- -D warnings
+
+      - name: Clippy (ring)
+        run: cargo clippy --no-default-features --features ring -- -D warnings
