@@ -14,13 +14,10 @@ use crate::{
         util::create_status_response, GatewayDirection, GatewayHandler, RequestOrResponse,
     },
     matrix::{
-        spec::EndpointType,
+        spec::{Action, EndpointType},
         util::{create_matrix_response, NameResolver},
     },
-    util::{
-        get_matching_endpoint, remove_default_ports_from_uri, RequestContext,
-        REGEX_ALLOWED_ENDPOINTS,
-    },
+    util::{get_matching_endpoint, remove_default_ports_from_uri, RegexEndpoint, RequestContext},
 };
 
 #[derive(Clone)]
@@ -30,6 +27,8 @@ pub struct OutboundHandler {
     allowed_federation_domains: HashSet<String>,
     allowed_client_domains: HashSet<String>,
     allowed_non_matrix_regexes: Vec<Regex>,
+    /// Per-server-name ruleset. Requests to servers without a configured ruleset are rejected.
+    server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
 }
 
 impl GatewayHandler for OutboundHandler {
@@ -42,8 +41,31 @@ impl GatewayHandler for OutboundHandler {
         let (parts, body) = req.into_parts();
         let ctx = RequestContext::new(parts, direction, client_addr, &mut self.name_resolver);
 
-        if let Some(endpoint) = get_matching_endpoint(&ctx.parts, &REGEX_ALLOWED_ENDPOINTS) {
-            match endpoint.endpoint_type {
+        // Non-matrix regexes bypass per-server ruleset routing entirely.
+        let uri = remove_default_ports_from_uri(ctx.parts.uri.clone());
+        for regex in &self.allowed_non_matrix_regexes {
+            if regex.is_match(uri.as_str()) {
+                ctx.log(Level::Info, "forward, destination uri matches regex");
+                return Request::from_parts(ctx.parts, body).into();
+            }
+        }
+
+        let Some(server_rules) = self
+            .server_rulesets
+            .get(&ctx.destination_server_name)
+            .map(Vec::as_slice)
+        else {
+            ctx.log(Level::Warn, "403 - forbidden, server not on allow list");
+            return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
+        };
+
+        if let Some(endpoint) = get_matching_endpoint(&ctx.parts, server_rules) {
+            if endpoint.rule.outbound_action == Action::Reject {
+                ctx.log(Level::Warn, "403 - forbidden, endpoint rejected by ruleset");
+                return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
+            }
+
+            match endpoint.rule.endpoint_type {
                 EndpointType::Federation => {
                     if !self
                         .allowed_federation_domains
@@ -75,14 +97,6 @@ impl GatewayHandler for OutboundHandler {
             return Request::from_parts(ctx.parts, body).into();
         }
 
-        let uri = remove_default_ports_from_uri(ctx.parts.uri.clone());
-        for regex in &self.allowed_non_matrix_regexes {
-            if regex.is_match(uri.as_str()) {
-                ctx.log(Level::Info, "forward, destination uri matches regex");
-                return Request::from_parts(ctx.parts, body).into();
-            }
-        }
-
         ctx.log(Level::Warn, "404 - not found, unknown endpoint");
         create_status_response(StatusCode::NOT_FOUND).into()
     }
@@ -94,6 +108,7 @@ impl OutboundHandler {
         allowed_federation_domains: BTreeMap<String, String>,
         allowed_client_domains: BTreeMap<String, String>,
         allowed_non_matrix_regexes: Vec<String>,
+        server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
     ) -> Result<Self, Whatever> {
         let mut allowed_server_names =
             HashSet::from_iter(allowed_federation_domains.values().cloned());
@@ -110,6 +125,7 @@ impl OutboundHandler {
             allowed_federation_domains: allowed_federation_domains.keys().cloned().collect(),
             allowed_client_domains: allowed_client_domains.keys().cloned().collect(),
             allowed_non_matrix_regexes,
+            server_rulesets,
         })
     }
 }

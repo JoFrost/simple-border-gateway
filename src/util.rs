@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use bytes::Bytes;
-use http::{request::Parts, uri::Scheme};
+use http::{request::Parts, uri::Scheme, Method};
 use http_body_util::{BodyExt, Limited};
 use log::{log, Level};
 use regex::Regex;
@@ -9,12 +9,13 @@ use reqwest::Body;
 use snafu::{ResultExt as _, Whatever};
 
 use crate::{
+    config::RuleConfig,
     http_gateway::{
         util::{extract_destination_host, extract_origin_ip},
         GatewayDirection,
     },
     matrix::{
-        spec::{Endpoint, ENDPOINTS},
+        spec::{Action, AuthType, EndpointType},
         util::NameResolver,
     },
 };
@@ -32,46 +33,108 @@ pub fn install_crypto_provider() {
     let _ = crypto_provider::default_provider().install_default();
 }
 
+/// Runtime representation of a filtering rule that owns its path string.
 #[derive(Clone)]
-pub(crate) struct RegexEndpoint {
+pub(crate) struct RuntimeRule {
+    pub(crate) method: Option<Method>,
+    pub(crate) endpoint_type: EndpointType,
+    pub(crate) auth_type: AuthType,
+    pub(crate) inbound_action: Action,
+    pub(crate) outbound_action: Action,
+}
+
+#[derive(Clone)]
+pub struct RegexEndpoint {
     regex: Regex,
-    endpoint: Endpoint,
+    pub(crate) rule: RuntimeRule,
 }
 
 #[allow(clippy::unwrap_used, reason = "lazy static regex")]
 static REPLACE_VARIABLES_RE: std::sync::LazyLock<Regex> =
     std::sync::LazyLock::new(|| Regex::new("\\{[^\\}]*}").unwrap());
 
-impl RegexEndpoint {
-    fn from(endpoint: Endpoint) -> Self {
-        // escape dots so they don't get interpreted
-        let mut regex = endpoint.path.replace(".", "\\.");
-        // replace variables in brackets with .*
-        regex = REPLACE_VARIABLES_RE.replace_all(&regex, ".*").to_string();
-        #[allow(
-            clippy::unwrap_used,
-            reason = " inputs statically defined in matrix_spec.rs"
-        )]
-        let regex = Regex::new(&regex).unwrap();
-        RegexEndpoint { regex, endpoint }
-    }
+fn path_to_regex(path: &str) -> Result<Regex, regex::Error> {
+    let escaped = path.replace('.', "\\.");
+    let pattern = REPLACE_VARIABLES_RE.replace_all(&escaped, ".*");
+    Regex::new(&pattern)
 }
 
-pub(crate) static REGEX_ALLOWED_ENDPOINTS: std::sync::LazyLock<Vec<RegexEndpoint>> =
-    std::sync::LazyLock::new(|| Vec::from_iter(ENDPOINTS.map(RegexEndpoint::from)));
+/// Builds a `Vec<RegexEndpoint>` from a slice of `RuleConfig` entries parsed from the config file.
+pub fn build_regex_endpoints_from_config(
+    rules: &[RuleConfig],
+) -> Result<Vec<RegexEndpoint>, Whatever> {
+    rules
+        .iter()
+        .map(|r| {
+            let method = r
+                .method
+                .as_deref()
+                .map(|m| {
+                    Method::from_bytes(m.as_bytes())
+                        .whatever_context(format!("Invalid method '{}' in ruleset", m))
+                })
+                .transpose()?;
+
+            let auth_type = match r.auth_type.as_deref() {
+                None | Some("CheckSignature") => AuthType::CheckSignature,
+                Some("Unauthenticated") => AuthType::Unauthenticated,
+                Some(other) => snafu::whatever!("Unknown auth_type '{}' in ruleset", other),
+            };
+
+            let endpoint_type = match r.endpoint_type.as_deref() {
+                None | Some("Federation") => EndpointType::Federation,
+                Some("WellKnown") => EndpointType::WellKnown,
+                Some("LegacyMedia") => EndpointType::LegacyMedia,
+                Some(other) => snafu::whatever!("Unknown endpoint_type '{}' in ruleset", other),
+            };
+
+            let inbound_action = match r.inbound_action.as_deref() {
+                None | Some("reject") => Action::Reject,
+                Some("allow") => Action::Allow,
+                Some(other) => snafu::whatever!(
+                    "Unknown inbound_action '{}' in ruleset (expected 'allow' or 'reject')",
+                    other
+                ),
+            };
+
+            let outbound_action = match r.outbound_action.as_deref() {
+                None | Some("reject") => Action::Reject,
+                Some("allow") => Action::Allow,
+                Some(other) => snafu::whatever!(
+                    "Unknown outbound_action '{}' in ruleset (expected 'allow' or 'reject')",
+                    other
+                ),
+            };
+
+            let regex = path_to_regex(&r.path)
+                .whatever_context(format!("Invalid path pattern '{}' in ruleset", r.path))?;
+
+            Ok(RegexEndpoint {
+                regex,
+                rule: RuntimeRule {
+                    method,
+                    endpoint_type,
+                    auth_type,
+                    inbound_action,
+                    outbound_action,
+                },
+            })
+        })
+        .collect()
+}
 
 pub(crate) fn get_matching_endpoint<'a>(
     parts: &Parts,
     allowed_endpoints: &'a [RegexEndpoint],
-) -> Option<&'a Endpoint> {
+) -> Option<&'a RegexEndpoint> {
     for endpoint in allowed_endpoints {
         if endpoint.regex.is_match(parts.uri.to_string().as_str()) {
-            if let Some(expected_method) = &endpoint.endpoint.method {
+            if let Some(expected_method) = &endpoint.rule.method {
                 if expected_method == parts.method {
-                    return Some(&endpoint.endpoint);
+                    return Some(endpoint);
                 }
             } else {
-                return Some(&endpoint.endpoint);
+                return Some(endpoint);
             }
         }
     }

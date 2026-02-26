@@ -6,7 +6,8 @@ use simple_border_gateway::inbound::InboundHandler;
 use simple_border_gateway::matrix::util::NameResolver;
 use simple_border_gateway::outbound::OutboundHandler;
 use simple_border_gateway::util::{
-    create_http_client, crypto_provider, install_crypto_provider, read_pem,
+    build_regex_endpoints_from_config, create_http_client, crypto_provider,
+    install_crypto_provider, read_pem, RegexEndpoint,
 };
 use snafu::{Report, ResultExt, Whatever};
 use tokio::signal::unix::{signal, SignalKind};
@@ -54,9 +55,26 @@ async fn start_services(
         target_base_urls.insert(hs.federation_domain, hs.target_base_url);
     }
 
+    // Build a name → Vec<RegexEndpoint> map from the declared rulesets.
+    // Validate that no ruleset is empty.
+    let mut named_rulesets: BTreeMap<String, Vec<RegexEndpoint>> = BTreeMap::new();
+    for ruleset in &config.rulesets {
+        if ruleset.rules.is_empty() {
+            snafu::whatever!(
+                "Ruleset '{}' has no rules; rulesets must contain at least one rule",
+                ruleset.name
+            );
+        }
+        let endpoints = build_regex_endpoints_from_config(&ruleset.rules)
+            .whatever_context(format!("Failed to build ruleset '{}'", ruleset.name))?;
+        named_rulesets.insert(ruleset.name.clone(), endpoints);
+    }
+
     let mut allowed_federation_domains: BTreeMap<String, String> = BTreeMap::new();
     let mut allowed_client_domains: BTreeMap<String, String> = BTreeMap::new();
     let mut public_key_map: PublicKeyMap = BTreeMap::new();
+    // Per-server ruleset map passed to handlers (keyed by server_name).
+    let mut server_rulesets: BTreeMap<String, Vec<RegexEndpoint>> = BTreeMap::new();
 
     for hs in config.external_homeservers {
         domain_server_name_map.insert(hs.federation_domain.clone(), hs.server_name.clone());
@@ -71,6 +89,19 @@ async fn start_services(
                 Base64::parse(v).whatever_context("Failed to parse verify key as base64")?,
             );
         }
+
+        let endpoints = match named_rulesets.get(&hs.ruleset) {
+            Some(e) => e,
+            None => {
+                snafu::whatever!(
+                    "Homeserver '{}' references unknown ruleset '{}'",
+                    hs.server_name,
+                    hs.ruleset
+                )
+            }
+        };
+        server_rulesets.insert(hs.server_name.clone(), endpoints.clone());
+
         public_key_map.insert(hs.server_name, verify_keys);
     }
 
@@ -83,7 +114,11 @@ async fn start_services(
         } else {
             let http_client = create_http_client(inbound_config.additional_root_certs, None)
                 .whatever_context("Failed to create inbound http client")?;
-            let handler = InboundHandler::new(name_resolver.clone(), public_key_map);
+            let handler = InboundHandler::new(
+                name_resolver.clone(),
+                public_key_map,
+                server_rulesets.clone(),
+            );
 
             let listen_address = inbound_config
                 .listen_address
@@ -120,6 +155,7 @@ async fn start_services(
                 allowed_federation_domains,
                 allowed_client_domains,
                 outbound_config.allowed_non_matrix_regexes_dangerous,
+                server_rulesets,
             )
             .whatever_context("Failed to create outbound handler")?;
 

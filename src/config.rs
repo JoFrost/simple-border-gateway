@@ -17,6 +17,8 @@ pub struct ExternalHomeserverConfig {
     pub federation_domain: String,
     pub client_domain: String,
     pub verify_keys: BTreeMap<String, String>,
+    /// Name of the ruleset to apply for this homeserver.
+    pub ruleset: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -25,12 +27,37 @@ pub struct UpstreamProxyAuth {
     pub password: String,
 }
 
+/// A single filtering rule for an endpoint path/method.
+#[derive(Deserialize, Serialize)]
+pub struct RuleConfig {
+    pub path: String,
+    /// HTTP method to match. Omit to match any method.
+    pub method: Option<String>,
+    /// Defaults to `"CheckSignature"` when absent.
+    pub auth_type: Option<String>,
+    /// Defaults to `"Federation"` when absent.
+    pub endpoint_type: Option<String>,
+    /// `"allow"` or `"reject"`. Defaults to `"reject"` when absent.
+    pub inbound_action: Option<String>,
+    /// `"allow"` or `"reject"`. Defaults to `"reject"` when absent.
+    pub outbound_action: Option<String>,
+}
+
+/// A named set of rules applied to one or more external homeservers.
+#[derive(Deserialize, Serialize)]
+pub struct RulesetConfig {
+    pub name: String,
+    pub rules: Vec<RuleConfig>,
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct BorderGatewayConfig {
     pub internal_homeservers: Vec<InternalHomeserverConfig>,
     pub external_homeservers: Vec<ExternalHomeserverConfig>,
     pub inbound_proxy: Option<InboundProxyConfig>,
     pub outbound_proxy: Option<OutboundProxyConfig>,
+    #[serde(default)]
+    pub rulesets: Vec<RulesetConfig>,
 }
 
 #[derive(Deserialize, Serialize)]

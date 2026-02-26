@@ -2,13 +2,16 @@ use http::{Request, Response, StatusCode};
 use rand::Rng;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 use reqwest::{Body, Proxy};
+use simple_border_gateway::config::RuleConfig;
 use simple_border_gateway::http_gateway::outbound::OutboundGatewayBuilder;
 use simple_border_gateway::http_gateway::{
     GatewayDirection, GatewayForwardError, GatewayHandler, RequestOrResponse,
 };
 use simple_border_gateway::matrix::util::NameResolver;
 use simple_border_gateway::outbound::OutboundHandler;
-use simple_border_gateway::util::{create_http_client, crypto_provider, install_crypto_provider};
+use simple_border_gateway::util::{
+    build_regex_endpoints_from_config, create_http_client, crypto_provider, install_crypto_provider,
+};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -80,13 +83,57 @@ async fn setup_mock_gateway(
     let mock_server = httpmock::MockServer::start();
 
     let original_handler = OutboundHandler::new(
-        NameResolver::new(BTreeMap::new()),
+        NameResolver::new(BTreeMap::from([
+            (
+                "federation.target.org".to_string(),
+                "target.org".to_string(),
+            ),
+            ("matrix.target.org".to_string(), "target.org".to_string()),
+        ])),
         BTreeMap::from([(
             "federation.target.org".to_string(),
             "target.org".to_string(),
         )]),
         BTreeMap::from([("matrix.target.org".to_string(), "target.org".to_string())]),
         vec!["https://matrix\\.org/_matrix/push/v1/notify".to_string()],
+        BTreeMap::from([(
+            "target.org".to_string(),
+            build_regex_endpoints_from_config(&[
+                RuleConfig {
+                    path: "/_matrix/federation/v1/query/profile".to_string(),
+                    method: Some("GET".to_string()),
+                    auth_type: None,
+                    endpoint_type: None,
+                    inbound_action: Some("allow".to_string()),
+                    outbound_action: Some("allow".to_string()),
+                },
+                RuleConfig {
+                    path: "/_matrix/federation/v1/3pid/onbind".to_string(),
+                    method: Some("PUT".to_string()),
+                    auth_type: None,
+                    endpoint_type: None,
+                    inbound_action: Some("reject".to_string()),
+                    outbound_action: Some("reject".to_string()),
+                },
+                RuleConfig {
+                    path: "/_matrix/media/{path}".to_string(),
+                    method: Some("GET".to_string()),
+                    auth_type: Some("Unauthenticated".to_string()),
+                    endpoint_type: Some("LegacyMedia".to_string()),
+                    inbound_action: Some("allow".to_string()),
+                    outbound_action: Some("allow".to_string()),
+                },
+                RuleConfig {
+                    path: "/.well-known/matrix/server".to_string(),
+                    method: Some("GET".to_string()),
+                    auth_type: Some("Unauthenticated".to_string()),
+                    endpoint_type: Some("WellKnown".to_string()),
+                    inbound_action: Some("allow".to_string()),
+                    outbound_action: Some("allow".to_string()),
+                },
+            ])
+            .unwrap(),
+        )]),
     )
     .expect("Failed to create outbound handler");
 
@@ -143,6 +190,32 @@ async fn test_invalid_endpoint() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_valid_federation_request_but_unknown_endpoint() {
+    let (_, client) = setup_mock_gateway(None).await;
+
+    let response = client
+        .get("https://federation.target.org/_matrix/federation/v1/query/avatar")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_valid_federation_request_but_rejected_endpoint() {
+    let (_, client) = setup_mock_gateway(None).await;
+
+    let response = client
+        .put("https://federation.target.org/_matrix/federation/v1/3pid/onbind")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

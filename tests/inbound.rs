@@ -4,11 +4,42 @@ use reqwest::Body;
 use ruma::serde::Base64;
 use ruma::signatures::{sign_json, Ed25519KeyPair};
 use ruma::CanonicalJsonValue;
+use simple_border_gateway::config::RuleConfig;
 use simple_border_gateway::http_gateway::inbound::InboundGatewayBuilder;
 use simple_border_gateway::inbound::InboundHandler;
 use simple_border_gateway::matrix::util::NameResolver;
-use simple_border_gateway::util::install_crypto_provider;
+use simple_border_gateway::util::{build_regex_endpoints_from_config, install_crypto_provider};
 use std::collections::BTreeMap;
+
+/// Builds a permissive ruleset covering the endpoints used in the inbound integration tests.
+fn test_rules() -> Vec<RuleConfig> {
+    vec![
+        RuleConfig {
+            path: "/.well-known/matrix/server".to_string(),
+            method: Some("GET".to_string()),
+            auth_type: Some("Unauthenticated".to_string()),
+            endpoint_type: Some("WellKnown".to_string()),
+            inbound_action: Some("allow".to_string()),
+            outbound_action: Some("allow".to_string()),
+        },
+        RuleConfig {
+            path: "/_matrix/federation/v1/query/profile".to_string(),
+            method: Some("GET".to_string()),
+            auth_type: None,
+            endpoint_type: None,
+            inbound_action: Some("allow".to_string()),
+            outbound_action: Some("allow".to_string()),
+        },
+        RuleConfig {
+            path: "/_matrix/federation/v1/send/{txnId}".to_string(),
+            method: Some("PUT".to_string()),
+            auth_type: None,
+            endpoint_type: None,
+            inbound_action: Some("allow".to_string()),
+            outbound_action: Some("allow".to_string()),
+        },
+    ]
+}
 
 async fn setup_mock_gateway() -> (httpmock::MockServer, u32, Ed25519KeyPair) {
     // env_logger::builder()
@@ -35,7 +66,22 @@ async fn setup_mock_gateway() -> (httpmock::MockServer, u32, Ed25519KeyPair) {
     mock_server_key.insert(key_id.clone(), Base64::new(public_key.to_vec()));
     public_key_map.insert("origin.org".to_string(), mock_server_key);
 
-    let handler = InboundHandler::new(NameResolver::new(BTreeMap::new()), public_key_map);
+    let handler = InboundHandler::new(
+        NameResolver::new(BTreeMap::new()),
+        public_key_map,
+        // "localhost" covers unauthenticated requests (IP-based origin for 127.0.0.1).
+        // "origin.org" covers authenticated requests (overridden from X-Matrix header).
+        BTreeMap::from([
+            (
+                "localhost".to_string(),
+                build_regex_endpoints_from_config(&test_rules()).unwrap(),
+            ),
+            (
+                "origin.org".to_string(),
+                build_regex_endpoints_from_config(&test_rules()).unwrap(),
+            ),
+        ]),
+    );
 
     let port = rand::rng().random_range(1024..65535);
 

@@ -5,11 +5,11 @@ use crate::{
         util::create_status_response, GatewayDirection, GatewayHandler, RequestOrResponse,
     },
     matrix::{
-        spec::AuthType,
+        spec::{Action, AuthType},
         util::{create_matrix_response, NameResolver},
         xmatrix::verify_signature,
     },
-    util::{get_matching_endpoint, to_bytes, RequestContext, REGEX_ALLOWED_ENDPOINTS},
+    util::{get_matching_endpoint, to_bytes, RegexEndpoint, RequestContext},
 };
 use http::{Request, StatusCode};
 use log::Level;
@@ -20,6 +20,8 @@ use ruma::{api::federation::authentication::XMatrix, serde::Base64};
 pub struct InboundHandler {
     name_resolver: NameResolver,
     public_key_map: BTreeMap<String, BTreeMap<String, Base64>>,
+    /// Per-server-name ruleset. Requests from servers without a configured ruleset are rejected.
+    server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
 }
 
 impl GatewayHandler for InboundHandler {
@@ -33,17 +35,34 @@ impl GatewayHandler for InboundHandler {
 
         let ctx = RequestContext::new(parts, direction, client_addr, &mut self.name_resolver);
 
-        let Some(endpoint) = get_matching_endpoint(&ctx.parts, &REGEX_ALLOWED_ENDPOINTS) else {
+        // Use the IP-based origin server name to pick the ruleset.
+        let Some(server_rules) = self
+            .server_rulesets
+            .get(&ctx.origin_server_name)
+            .map(Vec::as_slice)
+        else {
+            ctx.log(Level::Warn, "403 - forbidden, server not on allow list");
+            return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
+        };
+
+        let Some(endpoint) = get_matching_endpoint(&ctx.parts, server_rules) else {
             ctx.log(Level::Warn, "404 - not found, unknown endpoint");
             return create_status_response(StatusCode::NOT_FOUND).into();
         };
 
-        match endpoint.auth_type {
+        match endpoint.rule.auth_type {
             AuthType::Unauthenticated => {
+                if endpoint.rule.inbound_action == Action::Reject {
+                    ctx.log(Level::Warn, "403 - forbidden, endpoint rejected by ruleset");
+                    return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
+                }
                 ctx.log(Level::Info, "forward, unauthenticated endpoint");
                 Request::from_parts(ctx.parts, body).into()
             }
-            AuthType::CheckSignature => self.check_signature(ctx, body).await,
+            AuthType::CheckSignature => {
+                self.check_signature(ctx, body, endpoint.rule.inbound_action)
+                    .await
+            }
         }
     }
 }
@@ -52,14 +71,21 @@ impl InboundHandler {
     pub fn new(
         name_resolver: NameResolver,
         public_key_map: BTreeMap<String, BTreeMap<String, Base64>>,
+        server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
     ) -> Self {
         Self {
             name_resolver,
             public_key_map,
+            server_rulesets,
         }
     }
 
-    async fn check_signature(&self, mut ctx: RequestContext, body: Body) -> RequestOrResponse {
+    async fn check_signature(
+        &self,
+        mut ctx: RequestContext,
+        body: Body,
+        inbound_action: Action,
+    ) -> RequestOrResponse {
         let Some(auth_header) = ctx.parts.headers.get("Authorization") else {
             ctx.log(Level::Warn, "401 - unauthorized, no authorization header");
             return create_matrix_response(StatusCode::UNAUTHORIZED, "M_UNAUTHORIZED").into();
@@ -82,6 +108,11 @@ impl InboundHandler {
         {
             ctx.log(Level::Warn, "401 - unauthorized, unauthorized server");
             return create_matrix_response(StatusCode::UNAUTHORIZED, "M_UNAUTHORIZED").into();
+        }
+
+        if inbound_action == Action::Reject {
+            ctx.log(Level::Warn, "403 - forbidden, endpoint rejected by ruleset");
+            return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
         }
 
         let Some(body) = to_bytes(body, 1024 * 1024 * 10).await else {
