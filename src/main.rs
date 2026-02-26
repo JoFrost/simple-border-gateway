@@ -55,7 +55,6 @@ async fn start_services(
         target_base_urls.insert(hs.federation_domain, hs.target_base_url);
     }
 
-    // Build a name → Vec<RegexEndpoint> map from the declared rulesets.
     // Validate that no ruleset is empty.
     let mut named_rulesets: BTreeMap<String, Vec<RegexEndpoint>> = BTreeMap::new();
     for ruleset in &config.rulesets {
