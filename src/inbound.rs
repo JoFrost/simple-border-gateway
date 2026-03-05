@@ -43,12 +43,15 @@ impl GatewayHandler for InboundHandler {
             }
         }
 
-        // If rdns failed (returns IP address), try to extract origin from X-Matrix header
-        if ctx.origin_server_name.parse::<std::net::IpAddr>().is_ok() {
+        // If rdns failed (returns IP address or localhost), try to extract origin from Authorization header
+        // localhost here is treated as a failure case, as we are supposed to get something else than localhost in normal cases...
+        if ctx.origin_server_name.parse::<std::net::IpAddr>().is_ok()
+            || ctx.origin_server_name == "localhost"
+        {
             if let Some(auth_header) = ctx.parts.headers.get("Authorization") {
                 if let Ok(auth_str) = auth_header.to_str() {
                     // If this happens, we effectively do that twice, as
-                    // check_signature will also parse the X-Matrix header. But this is only a fallback for when rdns fails, so it shouldn't be a common case...
+                    // check_signature will also parse the Authorization header. But this is only a fallback for when rdns fails, so it shouldn't be a common case...
                     if let Ok(x_matrix) = XMatrix::parse(auth_str) {
                         ctx.origin_server_name = x_matrix.origin.to_string();
                     }
@@ -56,15 +59,16 @@ impl GatewayHandler for InboundHandler {
             }
         }
 
-        // Use the origin server name (from rdns or Host header) to pick the ruleset.
-        // Note: For authenticated endpoints, the X-Matrix origin will be validated in check_signature.
+        // We use the origin server name (from rdns or Authorization header) to pick the ruleset
         let Some(server_rules) = self
             .server_rulesets
             .get(&ctx.origin_server_name)
             .map(Vec::as_slice)
         else {
-            ctx.log(Level::Warn, "403 - forbidden, server not on allow list");
-            return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
+            println!("Server not on allow list: {}", &ctx.origin_server_name);
+            println!("{:?}", ctx.parts.headers);
+            ctx.log(Level::Warn, "401 - unauthorized, server not on allow list");
+            return create_matrix_response(StatusCode::UNAUTHORIZED, "M_UNAUTHORIZED").into();
         };
 
         let Some(endpoint) = get_matching_endpoint(&ctx.parts, server_rules) else {

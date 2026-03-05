@@ -1,31 +1,7 @@
-
+# Well known endpoints are not listed here as they are part of the global whitelist
 # 2.1 Resolving server names
-[[rules]]
-path = "/.well-known/matrix/server"
-method = "GET"
-auth_type = "Unauthenticated"
-endpoint_type = "WellKnown"
-inbound_action = "allow"
-outbound_action = "allow"
-
-# 2.2 Server implementation
-[[rules]]
-path = "/_matrix/federation/v1/version"
-method = "GET"
-auth_type = "Unauthenticated"
-endpoint_type = "Federation"
-inbound_action = "allow"
-outbound_action = "allow"
 
 # 2.3 Retrieving server keys
-[[rules]]
-path = "/_matrix/key/v2/server"
-method = "GET"
-auth_type = "Unauthenticated"
-endpoint_type = "Federation"
-inbound_action = "allow"
-outbound_action = "allow"
-
 [[rules]]
 path = "/_matrix/key/v2/query"
 method = "POST"

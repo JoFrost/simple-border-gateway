@@ -11,7 +11,7 @@ use simple_border_gateway::matrix::util::NameResolver;
 use simple_border_gateway::util::{build_regex_endpoints_from_config, install_crypto_provider};
 use std::collections::BTreeMap;
 
-/// Builds a permissive ruleset covering the endpoints used in the inbound integration tests.
+/// Minimal ruleset for the tests
 fn test_rules() -> Vec<RuleConfig> {
     vec![
         RuleConfig {
@@ -61,8 +61,8 @@ async fn setup_mock_gateway() -> (httpmock::MockServer, u32, Ed25519KeyPair) {
     let handler = InboundHandler::new(
         NameResolver::new(BTreeMap::new()),
         public_key_map,
-        // "localhost" covers unauthenticated requests (IP-based origin for 127.0.0.1).
-        // "origin.org" covers authenticated requests (overridden from X-Matrix header).
+        // Localhost is considered as a failure case for the name resolution
+        // It's used here mainly to test the not found case for the server ruleset, but also to test the fallback to the Authorization header parsing
         BTreeMap::from([
             (
                 "localhost".to_string(),

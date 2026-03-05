@@ -59,7 +59,7 @@ fn path_to_regex(path: &str) -> Result<Regex, regex::Error> {
     Regex::new(&pattern)
 }
 
-/// Builds a `Vec<RegexEndpoint>` from a slice of `RuleConfig` entries parsed from the config file.
+/// Convert the rules from the configuration into usable regexes/runtimes rules
 pub fn build_regex_endpoints_from_config(
     rules: &[RuleConfig],
 ) -> Result<Vec<RegexEndpoint>, Whatever> {
