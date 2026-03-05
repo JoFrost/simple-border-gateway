@@ -1,0 +1,356 @@
+
+# 2.1 Resolving server names
+[[rules]]
+path = "/.well-known/matrix/server"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "WellKnown"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 2.2 Server implementation
+[[rules]]
+path = "/_matrix/federation/v1/version"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 2.3 Retrieving server keys
+[[rules]]
+path = "/_matrix/key/v2/server"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/key/v2/query"
+method = "POST"
+auth_type = "Unauthenticated"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/key/v2/query/{server_name}"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 4. Transactions
+[[rules]]
+path = "/_matrix/federation/v1/send/{txnId}"
+method = "PUT"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 5.1.5 Retrieving event authorization information
+[[rules]]
+path = "/_matrix/federation/v1/event_auth/{roomId}/{eventId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 8. Backfilling and retrieving missing events
+[[rules]]
+path = "/_matrix/federation/v1/backfill/{roomId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/get_missing_events/{roomId}"
+method = "POST"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 9. Retrieving events
+[[rules]]
+path = "/_matrix/federation/v1/event/{eventId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/state/{roomId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/state_ids/{roomId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/timestamp_to_event/{roomId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 10. Joining rooms
+[[rules]]
+path = "/_matrix/federation/v1/make_join/{roomId}/{userId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/send_join/{roomId}/{eventId}"  # deprecated
+method = "PUT"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v2/send_join/{roomId}/{eventId}"
+method = "PUT"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 11. Knocking
+[[rules]]
+path = "/_matrix/federation/v1/make_knock/{roomId}/{userId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/send_knock/{roomId}/{eventId}"
+method = "PUT"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 12. Inviting
+[[rules]]
+path = "/_matrix/federation/v1/invite/{roomId}/{eventId}"
+method = "PUT"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v2/invite/{roomId}/{eventId}"
+method = "PUT"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 13. Leaving rooms
+[[rules]]
+path = "/_matrix/federation/v1/make_leave/{roomId}/{userId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/send_leave/{roomId}/{eventId}"  # deprecated
+method = "PUT"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v2/send_leave/{roomId}/{eventId}"
+method = "PUT"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 14. Third-party invites
+[[rules]]
+path = "/_matrix/federation/v1/3pid/onbind"
+method = "PUT"
+endpoint_type = "Federation"
+auth_type = "Unauthenticated"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/exchange_third_party_invite/{roomId}"
+method = "PUT"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 15. Public room directory
+[[rules]]
+path = "/_matrix/federation/v1/publicRooms"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/publicRooms"
+method = "POST"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 16. Spaces
+[[rules]]
+path = "/_matrix/federation/v1/hierarchy/{roomId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 20. Querying for information
+[[rules]]
+path = "/_matrix/federation/v1/query/directory"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/query/profile"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/query/{queryType}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 21. OpenID
+[[rules]]
+path = "/_matrix/federation/v1/openid/userinfo"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 22. Device management
+[[rules]]
+path = "/_matrix/federation/v1/user/devices/{userId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 23. End-to-end encryption
+[[rules]]
+path = "/_matrix/federation/v1/user/keys/claim"
+method = "POST"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/user/keys/query"
+method = "POST"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 25. Content repository
+[[rules]]
+path = "/_matrix/federation/v1/media/download/{mediaId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/federation/v1/media/thumbnail/{mediaId}"
+method = "GET"
+endpoint_type = "Federation"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# 25bis. Legacy content repository (any method)
+[[rules]]
+path = "/_matrix/media/{path}"
+auth_type = "Unauthenticated"
+endpoint_type = "LegacyMedia"
+inbound_action = "allow"
+outbound_action = "allow"
+
+# Needed for legacy content repository discovery
+[[rules]]
+path = "/.well-known/matrix/client"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "WellKnown"
+inbound_action = "allow"
+outbound_action = "allow"
+
+[[rulesets]]
+name = "restricted"
+# 2. Server discovery
+
+# 2.1 Resolving server names
+[[rules]]
+path = "/.well-known/matrix/server"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "WellKnown"
+inbound_action = "reject"
+outbound_action = "allow"
+
+# 2.2 Server implementation
+[[rules]]
+path = "/_matrix/federation/v1/version"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "Federation"
+inbound_action = "reject"
+outbound_action = "allow"
+
+# 2.3 Retrieving server keys
+[[rules]]
+path = "/_matrix/key/v2/server"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "Federation"
+inbound_action = "reject"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/key/v2/query"
+method = "POST"
+auth_type = "Unauthenticated"
+endpoint_type = "Federation"
+inbound_action = "reject"
+outbound_action = "allow"
+
+[[rules]]
+path = "/_matrix/key/v2/query/{server_name}"
+method = "GET"
+auth_type = "Unauthenticated"
+endpoint_type = "Federation"
+inbound_action = "reject"
+outbound_action = "allow"
+
+# 4. Transactions
+[[rules]]
+path = "/_matrix/federation/v1/send/{txnId}"
+method = "PUT"
+inbound_action = "reject"
+outbound_action = "allow"

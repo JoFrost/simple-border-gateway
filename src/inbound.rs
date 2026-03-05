@@ -47,6 +47,8 @@ impl GatewayHandler for InboundHandler {
         if ctx.origin_server_name.parse::<std::net::IpAddr>().is_ok() {
             if let Some(auth_header) = ctx.parts.headers.get("Authorization") {
                 if let Ok(auth_str) = auth_header.to_str() {
+                    // If this happens, we effectively do that twice, as
+                    // check_signature will also parse the X-Matrix header. But this is only a fallback for when rdns fails, so it shouldn't be a common case...
                     if let Ok(x_matrix) = XMatrix::parse(auth_str) {
                         ctx.origin_server_name = x_matrix.origin.to_string();
                     }

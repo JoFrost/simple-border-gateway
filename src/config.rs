@@ -48,14 +48,9 @@ pub struct RuleConfig {
 /// A named set of rules applied to one or more external homeservers.
 #[derive(Deserialize, Serialize)]
 pub struct RulesetConfig {
+    #[serde(skip_deserializing, default)]
     pub name: String,
     pub rules: Vec<RuleConfig>,
-}
-
-/// Wrapper for deserializing external ruleset files that use [[rulesets]] syntax
-#[derive(Deserialize)]
-pub(crate) struct RulesetsFile {
-    pub rulesets: Vec<RulesetConfig>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -116,12 +111,16 @@ impl BorderGatewayConfig {
             let ruleset_content = std::fs::read_to_string(&ruleset_path).whatever_context(
                 format!("Failed to read ruleset file {}", ruleset_path.display()),
             )?;
-            let rulesets_file: RulesetsFile =
+            let mut ruleset: RulesetConfig =
                 toml::from_str(&ruleset_content).whatever_context(format!(
                     "Failed to deserialize ruleset file {}",
                     ruleset_path.display()
                 ))?;
-            loaded_rulesets.extend(rulesets_file.rulesets);
+
+            // Set the name based on the filename
+            ruleset.name = ruleset_name;
+
+            loaded_rulesets.push(ruleset);
         }
 
         self.rulesets = loaded_rulesets;
