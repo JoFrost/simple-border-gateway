@@ -14,7 +14,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::task::JoinHandle;
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::str::FromStr;
 use std::{collections::BTreeMap, fs};
@@ -238,8 +238,11 @@ async fn main() -> Result<(), Whatever> {
     );
     let config_toml_str =
         fs::read_to_string(&cli.config_file).whatever_context("Failed to read config file")?;
-    let config: BorderGatewayConfig =
+    let mut config: BorderGatewayConfig =
         toml::from_str(&config_toml_str).whatever_context("Failed to deserialize config file")?;
+
+    let config_dir = cli.config_file.parent().unwrap_or_else(|| Path::new("."));
+    config.load_external_rulesets(config_dir)?;
 
     // This is just here to avoid to reload the config if it hasn't really changed.
     // This is very very basic on purpose, and can be improved in many ways if needed.
@@ -276,8 +279,18 @@ async fn main() -> Result<(), Whatever> {
                     info!("Config file unchanged, skipping reload");
                     continue;
                 }
-                let config: BorderGatewayConfig = match toml::from_str(&config_toml_str) {
-                    Ok(c) => c,
+                let config: BorderGatewayConfig = match toml::from_str::<BorderGatewayConfig>(&config_toml_str) {
+                    Ok(mut c) => {
+                        let config_dir = cli.config_file.parent().unwrap_or_else(|| Path::new("."));
+                        match c.load_external_rulesets(config_dir) {
+                            Ok(()) => c,
+                            Err(e) => {
+                                error!("Failed to load external rulesets: {}", e);
+                                warn!("The services will not be reloaded due to config errors");
+                                continue;
+                            }
+                        }
+                    }
                     Err(e) => {
                         error!("Failed to deserialize config file: {}", e);
                         warn!("The services will not be reloaded due to config errors");

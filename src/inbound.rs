@@ -43,13 +43,13 @@ impl GatewayHandler for InboundHandler {
             }
         }
 
-        // If rdns failed (returns IP address), fall back to Host header
+        // If rdns failed (returns IP address), try to extract origin from X-Matrix header
         if ctx.origin_server_name.parse::<std::net::IpAddr>().is_ok() {
-            if let Some(host_header) = ctx.parts.headers.get("Host") {
-                if let Ok(host_str) = host_header.to_str() {
-                    // Remove port if present
-                    let server_name = host_str.split(':').next().unwrap_or(host_str);
-                    ctx.origin_server_name = server_name.to_string();
+            if let Some(auth_header) = ctx.parts.headers.get("Authorization") {
+                if let Ok(auth_str) = auth_header.to_str() {
+                    if let Ok(x_matrix) = XMatrix::parse(auth_str) {
+                        ctx.origin_server_name = x_matrix.origin.to_string();
+                    }
                 }
             }
         }

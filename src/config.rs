@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use snafu::{ResultExt, Whatever};
 
 #[derive(Deserialize, Serialize)]
 pub struct InternalHomeserverConfig {
@@ -50,6 +52,12 @@ pub struct RulesetConfig {
     pub rules: Vec<RuleConfig>,
 }
 
+/// Wrapper for deserializing external ruleset files that use [[rulesets]] syntax
+#[derive(Deserialize)]
+pub(crate) struct RulesetsFile {
+    pub rulesets: Vec<RulesetConfig>,
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct BorderGatewayConfig {
     pub internal_homeservers: Vec<InternalHomeserverConfig>,
@@ -88,4 +96,35 @@ pub struct OutboundProxyConfig {
 
 fn default_outbound_proxy_listen_address() -> String {
     "0.0.0.0:3128".to_string()
+}
+
+impl BorderGatewayConfig {
+    /// Load rulesets from external files based on ruleset names
+    /// Each ruleset is expected to be in a separate file: `ruleset_name.toml`
+    pub fn load_external_rulesets(&mut self, config_dir: &Path) -> Result<(), Whatever> {
+        let mut loaded_rulesets = Vec::new();
+
+        // Collect all unique ruleset names referenced by external homeservers
+        let mut ruleset_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for homeserver in &self.external_homeservers {
+            ruleset_names.insert(homeserver.ruleset.clone());
+        }
+
+        // Load each ruleset from its external file
+        for ruleset_name in ruleset_names {
+            let ruleset_path = config_dir.join(format!("{}.toml", ruleset_name));
+            let ruleset_content = std::fs::read_to_string(&ruleset_path).whatever_context(
+                format!("Failed to read ruleset file {}", ruleset_path.display()),
+            )?;
+            let rulesets_file: RulesetsFile =
+                toml::from_str(&ruleset_content).whatever_context(format!(
+                    "Failed to deserialize ruleset file {}",
+                    ruleset_path.display()
+                ))?;
+            loaded_rulesets.extend(rulesets_file.rulesets);
+        }
+
+        self.rulesets = loaded_rulesets;
+        Ok(())
+    }
 }
