@@ -14,7 +14,7 @@ use crate::{
         util::create_status_response, GatewayDirection, GatewayHandler, RequestOrResponse,
     },
     matrix::{
-        spec::{Action, EndpointType},
+        spec::{Action, EndpointType, WHITELISTED_ENDPOINTS},
         util::{create_matrix_response, NameResolver},
     },
     util::{get_matching_endpoint, remove_default_ports_from_uri, RegexEndpoint, RequestContext},
@@ -50,6 +50,7 @@ impl GatewayHandler for OutboundHandler {
             }
         }
 
+        // Check if destination server is allowed
         let Some(server_rules) = self
             .server_rulesets
             .get(&ctx.destination_server_name)
@@ -58,6 +59,28 @@ impl GatewayHandler for OutboundHandler {
             ctx.log(Level::Warn, "403 - forbidden, server not on allow list");
             return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
         };
+
+        // Check whitelisted endpoints first
+        if let Some(endpoint) = get_matching_endpoint(&ctx.parts, &WHITELISTED_ENDPOINTS) {
+            if endpoint.rule.outbound_action == Action::Allow {
+                // Still apply domain restrictions based on endpoint type
+                match endpoint.rule.endpoint_type {
+                    EndpointType::WellKnown => {
+                        if !self.allowed_server_names.contains(&ctx.destination_host) {
+                            ctx.log(Level::Warn, "403 - forbidden, unauthorized base domain");
+                            return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN")
+                                .into();
+                        } else {
+                            ctx.log(Level::Info, "forward, whitelisted endpoint");
+                            return Request::from_parts(ctx.parts, body).into();
+                        }
+                    }
+                    // Federation and LegacyMedia endpoints are not whitelisted, so they should not be matched here.
+                    // We will check them in the server rules...
+                    _ => {}
+                }
+            }
+        }
 
         if let Some(endpoint) = get_matching_endpoint(&ctx.parts, server_rules) {
             if endpoint.rule.outbound_action == Action::Reject {

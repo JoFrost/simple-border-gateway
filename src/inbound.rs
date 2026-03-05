@@ -5,7 +5,7 @@ use crate::{
         util::create_status_response, GatewayDirection, GatewayHandler, RequestOrResponse,
     },
     matrix::{
-        spec::{Action, AuthType},
+        spec::{Action, AuthType, WHITELISTED_ENDPOINTS},
         util::{create_matrix_response, NameResolver},
         xmatrix::verify_signature,
     },
@@ -33,9 +33,29 @@ impl GatewayHandler for InboundHandler {
     ) -> RequestOrResponse {
         let (parts, body) = req.into_parts();
 
-        let ctx = RequestContext::new(parts, direction, client_addr, &mut self.name_resolver);
+        let mut ctx = RequestContext::new(parts, direction, client_addr, &mut self.name_resolver);
 
-        // Use the IP-based origin server name to pick the ruleset.
+        // Check whitelisted endpoints first before any other validation
+        if let Some(endpoint) = get_matching_endpoint(&ctx.parts, &WHITELISTED_ENDPOINTS) {
+            if endpoint.rule.inbound_action == Action::Allow {
+                ctx.log(Level::Info, "forward, whitelisted endpoint");
+                return Request::from_parts(ctx.parts, body).into();
+            }
+        }
+
+        // If rdns failed (returns IP address), fall back to Host header
+        if ctx.origin_server_name.parse::<std::net::IpAddr>().is_ok() {
+            if let Some(host_header) = ctx.parts.headers.get("Host") {
+                if let Ok(host_str) = host_header.to_str() {
+                    // Remove port if present
+                    let server_name = host_str.split(':').next().unwrap_or(host_str);
+                    ctx.origin_server_name = server_name.to_string();
+                }
+            }
+        }
+
+        // Use the origin server name (from rdns or Host header) to pick the ruleset.
+        // Note: For authenticated endpoints, the X-Matrix origin will be validated in check_signature.
         let Some(server_rules) = self
             .server_rulesets
             .get(&ctx.origin_server_name)
@@ -50,6 +70,7 @@ impl GatewayHandler for InboundHandler {
             return create_status_response(StatusCode::NOT_FOUND).into();
         };
 
+        // Verifying the auth type, and if a specific endpoint is authorized or not.
         match endpoint.rule.auth_type {
             AuthType::Unauthenticated => {
                 if endpoint.rule.inbound_action == Action::Reject {

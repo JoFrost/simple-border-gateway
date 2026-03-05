@@ -15,14 +15,6 @@ use std::collections::BTreeMap;
 fn test_rules() -> Vec<RuleConfig> {
     vec![
         RuleConfig {
-            path: "/.well-known/matrix/server".to_string(),
-            method: Some("GET".to_string()),
-            auth_type: Some("Unauthenticated".to_string()),
-            endpoint_type: Some("WellKnown".to_string()),
-            inbound_action: Some("allow".to_string()),
-            outbound_action: Some("allow".to_string()),
-        },
-        RuleConfig {
             path: "/_matrix/federation/v1/query/profile".to_string(),
             method: Some("GET".to_string()),
             auth_type: None,
