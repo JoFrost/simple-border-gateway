@@ -64,27 +64,23 @@ impl GatewayHandler for OutboundHandler {
         if let Some(endpoint) = get_matching_endpoint(&ctx.parts, &WHITELISTED_ENDPOINTS) {
             if endpoint.rule.outbound_action == Action::Allow {
                 // Still apply domain restrictions based on endpoint type
-                match endpoint.rule.endpoint_type {
-                    EndpointType::WellKnown => {
-                        // For well-known endpoints, we want to allow requests to any server on the allow list, as well as federation domains.
-                        if !self
-                            .allowed_server_names
+                // Federation and LegacyMedia endpoints are not whitelisted, so they should not be matched here.
+                // We will check them in the server rules...
+                if endpoint.rule.endpoint_type == EndpointType::WellKnown {
+                    // For well-known endpoints, we want to allow requests to any server on the allow list, as well as federation domains.
+                    if !self
+                        .allowed_server_names
+                        .contains(&ctx.destination_host.to_ascii_lowercase())
+                        && !self
+                            .allowed_federation_domains
                             .contains(&ctx.destination_host.to_ascii_lowercase())
-                            && !self
-                                .allowed_federation_domains
-                                .contains(&ctx.destination_host.to_ascii_lowercase())
-                        {
-                            ctx.log(Level::Warn, "403 - forbidden, unauthorized base domain");
-                            return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN")
-                                .into();
-                        } else {
-                            ctx.log(Level::Info, "forward, whitelisted endpoint");
-                            return Request::from_parts(ctx.parts, body).into();
-                        }
+                    {
+                        ctx.log(Level::Warn, "403 - forbidden, unauthorized base domain");
+                        return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
+                    } else {
+                        ctx.log(Level::Info, "forward, whitelisted endpoint");
+                        return Request::from_parts(ctx.parts, body).into();
                     }
-                    // Federation and LegacyMedia endpoints are not whitelisted, so they should not be matched here.
-                    // We will check them in the server rules...
-                    _ => {}
                 }
             }
         }
