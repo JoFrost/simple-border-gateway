@@ -73,6 +73,7 @@ async fn setup_mock_gateway() -> (httpmock::MockServer, u32, Ed25519KeyPair) {
                 build_regex_endpoints_from_config(&test_rules()).unwrap(),
             ),
         ]),
+        false,
     );
 
     let port = rand::rng().random_range(1024..65535);

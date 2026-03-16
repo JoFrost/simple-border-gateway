@@ -40,6 +40,13 @@ struct Cli {
     /// Sets a custom config file
     #[arg(short = 'c', long, value_name = "FILE", default_value = "config.toml")]
     config_file: PathBuf,
+
+    /// Reject all non-discovery endpoints by default.
+    /// When set, only well known endpoints from the
+    /// default ruleset are allowed (only in inbound mode, everything is blocked by default in outbound mode). All other endpoints require an
+    /// explicit override rule to be permitted.
+    #[arg(long, default_value = "false")]
+    reject_all_by_default: bool,
 }
 
 async fn start_services(
@@ -55,16 +62,9 @@ async fn start_services(
         target_base_urls.insert(hs.federation_domain, hs.target_base_url);
     }
 
-    // Validate that no ruleset is empty.
     let mut named_rulesets: BTreeMap<String, Vec<RegexEndpoint>> = BTreeMap::new();
     for ruleset in &config.rulesets {
-        if ruleset.rules.is_empty() {
-            snafu::whatever!(
-                "Ruleset '{}' has no rules; rulesets must contain at least one rule",
-                ruleset.name
-            );
-        }
-        let endpoints = build_regex_endpoints_from_config(&ruleset.rules)
+        let endpoints = build_regex_endpoints_from_config(&ruleset.override_rules)
             .whatever_context(format!("Failed to build ruleset '{}'", ruleset.name))?;
         named_rulesets.insert(ruleset.name.clone(), endpoints);
     }
@@ -117,6 +117,7 @@ async fn start_services(
                 name_resolver.clone(),
                 public_key_map,
                 server_rulesets.clone(),
+                cli.reject_all_by_default,
             );
 
             let listen_address = inbound_config
@@ -155,6 +156,7 @@ async fn start_services(
                 allowed_client_domains,
                 outbound_config.allowed_non_matrix_regexes_dangerous,
                 server_rulesets,
+                cli.reject_all_by_default,
             )
             .whatever_context("Failed to create outbound handler")?;
 

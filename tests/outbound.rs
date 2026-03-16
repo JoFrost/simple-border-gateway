@@ -126,6 +126,7 @@ async fn setup_mock_gateway(
             ])
             .unwrap(),
         )]),
+        false,
     )
     .expect("Failed to create outbound handler");
 
@@ -195,6 +196,30 @@ async fn test_valid_federation_request_but_unknown_endpoint() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_valid_federation_request_from_default_whitelist() {
+    let (mock_server, client) = setup_mock_gateway(None).await;
+
+    let mut mock = mock_server.mock(|when, then| {
+        when.method("GET")
+            .path("/_matrix/federation/v1/query/directory");
+        then.status(200);
+    });
+
+    // This endpoint is missing from the override ruleset, but it's part of the default ruleset
+    // This SHOULD be accepted.
+    let response = client
+        .get("https://federation.target.org/_matrix/federation/v1/query/directory")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    mock.assert();
+
+    mock.delete();
 }
 
 #[tokio::test]

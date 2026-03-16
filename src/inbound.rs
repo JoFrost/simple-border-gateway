@@ -5,7 +5,7 @@ use crate::{
         util::create_status_response, GatewayDirection, GatewayHandler, RequestOrResponse,
     },
     matrix::{
-        spec::{Action, AuthType, WHITELISTED_ENDPOINTS},
+        spec::{Action, AuthType, EndpointType, DEFAULT_RULESET},
         util::{create_matrix_response, NameResolver},
         xmatrix::verify_signature,
     },
@@ -20,8 +20,10 @@ use ruma::{api::federation::authentication::XMatrix, serde::Base64};
 pub struct InboundHandler {
     name_resolver: NameResolver,
     public_key_map: BTreeMap<String, BTreeMap<String, Base64>>,
-    /// Per-server-name ruleset. Requests from servers without a configured ruleset are rejected.
+    /// Per-server-name override ruleset.
     server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
+    /// When true, all non well-known endpoint matches are rejected unless an override rule explicitly allows them.
+    reject_all_by_default: bool,
 }
 
 impl GatewayHandler for InboundHandler {
@@ -35,10 +37,14 @@ impl GatewayHandler for InboundHandler {
 
         let mut ctx = RequestContext::new(parts, direction, client_addr, &mut self.name_resolver);
 
-        // Check whitelisted endpoints first before any other validation
-        if let Some(endpoint) = get_matching_endpoint(&ctx.parts, &WHITELISTED_ENDPOINTS) {
-            if endpoint.rule.inbound_action == Action::Allow {
-                ctx.log(Level::Info, "forward, whitelisted endpoint");
+        // Checking Well known endpoints before doing anything. The well known endpoints will ALWAYS be allowed,
+        // as they are essential for federations to work properly.
+        // Those endpoints cannot be overriden by rulesets.
+        if let Some(endpoint) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
+            if endpoint.rule.endpoint_type == EndpointType::WellKnown
+                && endpoint.rule.inbound_action == Action::Allow
+            {
+                ctx.log(Level::Info, "forward, well-known endpoint");
                 return Request::from_parts(ctx.parts, body).into();
             }
         }
@@ -59,22 +65,34 @@ impl GatewayHandler for InboundHandler {
             }
         }
 
-        // We use the origin server name (from rdns or Authorization header) to pick the ruleset
-        let Some(server_rules) = self
+        // Use override rules if server has a configured ruleset, otherwise fall through to the default ruleset.
+        let server_rules = self
             .server_rulesets
             .get(&ctx.origin_server_name)
             .map(Vec::as_slice)
-        else {
-            println!("Server not on allow list: {}", &ctx.origin_server_name);
-            println!("{:?}", ctx.parts.headers);
-            ctx.log(Level::Warn, "401 - unauthorized, server not on allow list");
-            return create_matrix_response(StatusCode::UNAUTHORIZED, "M_UNAUTHORIZED").into();
-        };
+            .unwrap_or(&[]);
 
-        let Some(endpoint) = get_matching_endpoint(&ctx.parts, server_rules) else {
-            ctx.log(Level::Warn, "404 - not found, unknown endpoint");
-            return create_status_response(StatusCode::NOT_FOUND).into();
-        };
+        // Two-tier lookup: override rules take precedence, then fall back to the default ruleset.
+        // We track here whether the match came from an override rule.
+        let (endpoint, is_override) =
+            if let Some(ep) = get_matching_endpoint(&ctx.parts, server_rules) {
+                (ep, true)
+            } else if let Some(ep) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
+                (ep, false)
+            } else {
+                ctx.log(Level::Warn, "404 - not found, unknown endpoint");
+                return create_status_response(StatusCode::NOT_FOUND).into();
+            };
+
+        // When reject all by default is set, we reject non well known endpoint matches
+        // unless an override rule explicitly allowed them.
+        if self.reject_all_by_default && !is_override {
+            ctx.log(
+                Level::Warn,
+                "403 - forbidden, endpoint rejected by ruleset due to policy",
+            );
+            return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
+        }
 
         // Verifying the auth type, and if a specific endpoint is authorized or not.
         match endpoint.rule.auth_type {
@@ -99,11 +117,13 @@ impl InboundHandler {
         name_resolver: NameResolver,
         public_key_map: BTreeMap<String, BTreeMap<String, Base64>>,
         server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
+        reject_all_by_default: bool,
     ) -> Self {
         Self {
             name_resolver,
             public_key_map,
             server_rulesets,
+            reject_all_by_default,
         }
     }
 

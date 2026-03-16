@@ -45,12 +45,14 @@ pub struct RuleConfig {
     pub outbound_action: Option<String>,
 }
 
-/// A named set of rules applied to one or more external homeservers.
+/// A named set of override rules applied to one or more external homeservers.
+/// Override rules take precedence over the default ruleset.
 #[derive(Deserialize, Serialize)]
 pub struct RulesetConfig {
     #[serde(skip_deserializing, default)]
     pub name: String,
-    pub rules: Vec<RuleConfig>,
+    #[serde(default)]
+    pub override_rules: Vec<RuleConfig>,
 }
 
 #[derive(Deserialize, Serialize)]
