@@ -90,7 +90,13 @@ async fn start_services(
 
         let endpoints = match &hs.ruleset {
             Some(name) => match named_rulesets.get(name) {
-                Some(e) => e,
+                Some(e) => {
+                    info!(
+                        "Using override ruleset '{}' for homeserver '{}'",
+                        name, hs.server_name
+                    );
+                    e
+                }
                 None => {
                     snafu::whatever!(
                         "Homeserver '{}' references unknown ruleset '{}'",
@@ -99,7 +105,10 @@ async fn start_services(
                     )
                 }
             },
-            None => &vec![],
+            None => {
+                info!("Using default ruleset for homeserver '{}'", hs.server_name);
+                &vec![]
+            }
         };
         server_rulesets.insert(hs.server_name.clone(), endpoints.clone());
 
@@ -232,6 +241,10 @@ async fn main() -> Result<(), Whatever> {
 
     install_crypto_provider();
     debug!("Crypto provider installed");
+
+    if cli.reject_all_by_default {
+        info!("Reject all by default mode enabled. The default ruleset will reject all endpoints (except well known ones in inbound mode), and only endpoints explicitly allowed by override rules will be accepted.");
+    }
 
     // Initial loading of the config file
     // This could have been inside the loop as well, but it was left out of it for simplicity

@@ -71,6 +71,7 @@ impl GatewayHandler for HandlerWithMockServer {
 
 async fn setup_mock_gateway(
     upstream_proxy_url: Option<String>,
+    reject_all_by_default: bool,
 ) -> (httpmock::MockServer, reqwest::Client) {
     // env_logger::builder()
     //     .filter_level(log::LevelFilter::Info)
@@ -126,7 +127,7 @@ async fn setup_mock_gateway(
             ])
             .unwrap(),
         )]),
-        false,
+        reject_all_by_default,
     )
     .expect("Failed to create outbound handler");
 
@@ -175,7 +176,7 @@ async fn setup_mock_gateway(
 
 #[tokio::test]
 async fn test_invalid_endpoint() {
-    let (_, client) = setup_mock_gateway(None).await;
+    let (_, client) = setup_mock_gateway(None, false).await;
     let response = client
         .get("https://federation.target.org/_matrix/federation/v1/invalid")
         .send()
@@ -187,7 +188,7 @@ async fn test_invalid_endpoint() {
 
 #[tokio::test]
 async fn test_valid_federation_request_but_unknown_endpoint() {
-    let (_, client) = setup_mock_gateway(None).await;
+    let (_, client) = setup_mock_gateway(None, false).await;
 
     let response = client
         .get("https://federation.target.org/_matrix/federation/v1/query/avatar")
@@ -199,8 +200,46 @@ async fn test_valid_federation_request_but_unknown_endpoint() {
 }
 
 #[tokio::test]
+async fn test_valid_federation_request_from_rejected_whitelist() {
+    let (_, client) = setup_mock_gateway(None, true).await;
+
+    // This endpoint is missing from the override ruleset, but it's part of the default ruleset
+    // This should be rejected as the default ruleset is in reject all mode, with no override on this endpoint.
+    let response = client
+        .get("https://federation.target.org/_matrix/federation/v1/query/directory")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_valid_federation_request_from_rejected_whitelist_override() {
+    let (mock_server, client) = setup_mock_gateway(None, true).await;
+
+    let mut mock = mock_server.mock(|when, then| {
+        when.method("GET")
+            .path("/_matrix/federation/v1/query/profile");
+        then.status(200);
+    });
+
+    // Despite the default ruleset being in reject all mode, this endpoint is explicitly allowed in the override ruleset, so it should be accepted.
+    let response = client
+        .get("https://federation.target.org/_matrix/federation/v1/query/profile")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    mock.assert();
+
+    mock.delete();
+}
+
+#[tokio::test]
 async fn test_valid_federation_request_from_default_whitelist() {
-    let (mock_server, client) = setup_mock_gateway(None).await;
+    let (mock_server, client) = setup_mock_gateway(None, false).await;
 
     let mut mock = mock_server.mock(|when, then| {
         when.method("GET")
@@ -224,7 +263,7 @@ async fn test_valid_federation_request_from_default_whitelist() {
 
 #[tokio::test]
 async fn test_valid_federation_request_but_rejected_endpoint() {
-    let (_, client) = setup_mock_gateway(None).await;
+    let (_, client) = setup_mock_gateway(None, false).await;
 
     let response = client
         .put("https://federation.target.org/_matrix/federation/v1/3pid/onbind")
@@ -237,7 +276,7 @@ async fn test_valid_federation_request_but_rejected_endpoint() {
 
 #[tokio::test]
 async fn test_valid_federation_request() {
-    let (mock_server, client) = setup_mock_gateway(None).await;
+    let (mock_server, client) = setup_mock_gateway(None, false).await;
 
     let mut mock = mock_server.mock(|when, then| {
         when.method("GET")
@@ -259,7 +298,7 @@ async fn test_valid_federation_request() {
 
 #[tokio::test]
 async fn test_unauthorized_federation_request() {
-    let (_, client) = setup_mock_gateway(None).await;
+    let (_, client) = setup_mock_gateway(None, false).await;
 
     let response = client
         .get("https://federation.unauthorized.org/_matrix/federation/v1/query/profile")
@@ -272,7 +311,7 @@ async fn test_unauthorized_federation_request() {
 
 #[tokio::test]
 async fn test_valid_legacy_media_request() {
-    let (mock_server, client) = setup_mock_gateway(None).await;
+    let (mock_server, client) = setup_mock_gateway(None, false).await;
 
     let mut mock = mock_server.mock(|when, then| {
         when.method("GET")
@@ -294,7 +333,7 @@ async fn test_valid_legacy_media_request() {
 
 #[tokio::test]
 async fn test_unauthorized_legacy_media_request() {
-    let (_, client) = setup_mock_gateway(None).await;
+    let (_, client) = setup_mock_gateway(None, false).await;
 
     let response = client
         .get("https://matrix.unauthorized.org/_matrix/media/v3/download/test.org/mediaId")
@@ -307,7 +346,7 @@ async fn test_unauthorized_legacy_media_request() {
 
 #[tokio::test]
 async fn test_valid_well_known_request() {
-    let (mock_server, client) = setup_mock_gateway(None).await;
+    let (mock_server, client) = setup_mock_gateway(None, false).await;
 
     let mut mock = mock_server.mock(|when, then| {
         when.method("GET").path("/.well-known/matrix/server");
@@ -328,7 +367,7 @@ async fn test_valid_well_known_request() {
 
 #[tokio::test]
 async fn test_unauthorized_well_known_request() {
-    let (_, client) = setup_mock_gateway(None).await;
+    let (_, client) = setup_mock_gateway(None, false).await;
 
     let response = client
         .get("https://unauthorized.org/.well-known/matrix/server")
@@ -341,7 +380,7 @@ async fn test_unauthorized_well_known_request() {
 
 #[tokio::test]
 async fn test_allowed_non_matrix_regex() {
-    let (mock_server, client) = setup_mock_gateway(None).await;
+    let (mock_server, client) = setup_mock_gateway(None, false).await;
 
     let mut mock = mock_server.mock(|when, then| {
         when.method("GET").path("/_matrix/push/v1/notify");
