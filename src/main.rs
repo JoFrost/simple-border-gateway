@@ -72,7 +72,6 @@ async fn start_services(
     let mut allowed_federation_domains: BTreeMap<String, String> = BTreeMap::new();
     let mut allowed_client_domains: BTreeMap<String, String> = BTreeMap::new();
     let mut public_key_map: PublicKeyMap = BTreeMap::new();
-    // Per-server ruleset map passed to handlers (keyed by server_name).
     let mut server_rulesets: BTreeMap<String, Vec<RegexEndpoint>> = BTreeMap::new();
 
     for hs in config.external_homeservers {
@@ -89,15 +88,18 @@ async fn start_services(
             );
         }
 
-        let endpoints = match named_rulesets.get(&hs.ruleset) {
-            Some(e) => e,
-            None => {
-                snafu::whatever!(
-                    "Homeserver '{}' references unknown ruleset '{}'",
-                    hs.server_name,
-                    hs.ruleset
-                )
-            }
+        let endpoints = match &hs.ruleset {
+            Some(name) => match named_rulesets.get(name) {
+                Some(e) => e,
+                None => {
+                    snafu::whatever!(
+                        "Homeserver '{}' references unknown ruleset '{}'",
+                        hs.server_name,
+                        name
+                    )
+                }
+            },
+            None => &vec![],
         };
         server_rulesets.insert(hs.server_name.clone(), endpoints.clone());
 

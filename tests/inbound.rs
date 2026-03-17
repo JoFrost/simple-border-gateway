@@ -11,6 +11,11 @@ use simple_border_gateway::matrix::util::NameResolver;
 use simple_border_gateway::util::{build_regex_endpoints_from_config, install_crypto_provider};
 use std::collections::BTreeMap;
 
+// Here to test the correct usage of the default ruleset if we did not specify any ruleset for a server
+fn no_overriden_rules() -> Vec<RuleConfig> {
+    vec![]
+}
+
 /// Minimal ruleset for the tests
 fn test_rules() -> Vec<RuleConfig> {
     vec![
@@ -23,6 +28,14 @@ fn test_rules() -> Vec<RuleConfig> {
             outbound_action: Some("allow".to_string()),
         },
         RuleConfig {
+            path: "/_matrix/key/v2/query".to_string(),
+            method: Some("POST".to_string()),
+            auth_type: Some("Unauthenticated".to_string()),
+            endpoint_type: Some("Federation".to_string()),
+            inbound_action: Some("reject".to_string()),
+            outbound_action: Some("reject".to_string()),
+        },
+        RuleConfig {
             path: "/_matrix/federation/v1/send/{txnId}".to_string(),
             method: Some("PUT".to_string()),
             auth_type: None,
@@ -33,7 +46,7 @@ fn test_rules() -> Vec<RuleConfig> {
     ]
 }
 
-async fn setup_mock_gateway() -> (httpmock::MockServer, u32, Ed25519KeyPair) {
+async fn setup_mock_gateway(no_overridden_rules: bool) -> (httpmock::MockServer, u32, Ed25519KeyPair) {
     // env_logger::builder()
     //     .filter_level(log::LevelFilter::Debug)
     //     .target(env_logger::Target::Stdout)
@@ -58,6 +71,12 @@ async fn setup_mock_gateway() -> (httpmock::MockServer, u32, Ed25519KeyPair) {
     mock_server_key.insert(key_id.clone(), Base64::new(public_key.to_vec()));
     public_key_map.insert("origin.org".to_string(), mock_server_key);
 
+    let ruleset = if no_overridden_rules {
+        no_overriden_rules()
+    } else {
+        test_rules()
+    };
+
     let handler = InboundHandler::new(
         NameResolver::new(BTreeMap::new()),
         public_key_map,
@@ -66,11 +85,11 @@ async fn setup_mock_gateway() -> (httpmock::MockServer, u32, Ed25519KeyPair) {
         BTreeMap::from([
             (
                 "localhost".to_string(),
-                build_regex_endpoints_from_config(&test_rules()).unwrap(),
+                build_regex_endpoints_from_config(&ruleset).unwrap(),
             ),
             (
                 "origin.org".to_string(),
-                build_regex_endpoints_from_config(&test_rules()).unwrap(),
+                build_regex_endpoints_from_config(&ruleset).unwrap(),
             ),
         ]),
         false,
@@ -101,7 +120,7 @@ async fn setup_mock_gateway() -> (httpmock::MockServer, u32, Ed25519KeyPair) {
 
 #[tokio::test]
 async fn test_invalid_endpoint() {
-    let (_, port, _) = setup_mock_gateway().await;
+    let (_, port, _) = setup_mock_gateway(false).await;
     let response = reqwest::Client::new()
         .get(format!(
             "http://localhost:{}/_matrix/federation/v1/invalid",
@@ -117,7 +136,7 @@ async fn test_invalid_endpoint() {
 
 #[tokio::test]
 async fn test_unauthenticated_endpoint() {
-    let (mock_server, port, _) = setup_mock_gateway().await;
+    let (mock_server, port, _) = setup_mock_gateway(false).await;
 
     let mut mock = mock_server.mock(|when, then| {
         when.method("GET").path("/.well-known/matrix/server");
@@ -187,7 +206,7 @@ fn sign_request(
 
 #[tokio::test]
 async fn test_authenticated_endpoint_with_valid_request() {
-    let (mock_server, port, keypair) = setup_mock_gateway().await;
+    let (mock_server, port, keypair) = setup_mock_gateway(false).await;
     let key_id = format!("ed25519:{}", keypair.version());
 
     let method = "GET";
@@ -233,9 +252,99 @@ async fn test_authenticated_endpoint_with_valid_request() {
     mock.delete();
 }
 
+// This test, although it's nearly identical to the unauthorized endpoint ones
+// is supposed to pass as we only rely on the default ruleset. The default ruleset allows this endpoint.
+#[tokio::test]
+async fn test_authenticated_endpoint_with_default_ruleset() {
+    let (mock_server, port, keypair) = setup_mock_gateway(true).await;
+    let key_id = format!("ed25519:{}", keypair.version());
+
+    let method = "POST";
+    let path = "/_matrix/key/v2/query";
+    let origin_name = "origin.org";
+    let destination_name = "target.org";
+
+    let mut mock = mock_server.mock(|when, then| {
+        when.method(method).path(path);
+        then.status(200);
+    });
+
+    let signature = sign_request(
+        &key_id,
+        &keypair,
+        method,
+        path,
+        origin_name,
+        destination_name,
+    );
+
+    let auth_header = format!(
+        "X-Matrix origin=\"{}\",destination=\"{}\",key=\"{}\",sig=\"{}\"",
+        origin_name, destination_name, key_id, signature
+    );
+
+    let response = reqwest::Client::new()
+        .request(
+            method.parse().unwrap(),
+            format!("http://localhost:{}{}", port, path),
+        )
+        .header("X-Forwarded-Host", destination_name)
+        .header("Authorization", auth_header.clone())
+        .send()
+        .await
+        .unwrap();
+
+    let status = response.status();
+
+    assert_eq!(status, StatusCode::OK);
+    mock.assert();
+
+    mock.delete();
+}
+
+#[tokio::test]
+async fn test_authenticated_endpoint_with_unauthorized_endpoint() {
+    let (_, port, keypair) = setup_mock_gateway(false).await;
+    let key_id = format!("ed25519:{}", keypair.version());
+
+    let method = "POST";
+    let path = "/_matrix/key/v2/query";
+    let origin_name = "origin.org";
+    let destination_name = "target.org";
+
+    let signature = sign_request(
+        &key_id,
+        &keypair,
+        method,
+        path,
+        origin_name,
+        destination_name,
+    );
+
+    let auth_header = format!(
+        "X-Matrix origin=\"{}\",destination=\"{}\",key=\"{}\",sig=\"{}\"",
+        origin_name, destination_name, key_id, signature
+    );
+
+    let response = reqwest::Client::new()
+        .request(
+            method.parse().unwrap(),
+            format!("http://localhost:{}{}", port, path),
+        )
+        .header("X-Forwarded-Host", destination_name)
+        .header("Authorization", auth_header.clone())
+        .send()
+        .await
+        .unwrap();
+
+    let status = response.status();
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn test_authenticated_endpoint_from_unauthorized_server() {
-    let (_, port, keypair) = setup_mock_gateway().await;
+    let (_, port, keypair) = setup_mock_gateway(false).await;
     let key_id = format!("ed25519:{}", keypair.version());
 
     let method = "GET";
@@ -275,7 +384,7 @@ async fn test_authenticated_endpoint_from_unauthorized_server() {
 
 #[tokio::test]
 async fn test_authenticated_endpoint_with_invalid_signature() {
-    let (_, port, keypair) = setup_mock_gateway().await;
+    let (_, port, keypair) = setup_mock_gateway(false).await;
     let key_id = format!("ed25519:{}", keypair.version());
 
     let method = "GET";
@@ -316,7 +425,7 @@ async fn test_authenticated_endpoint_with_invalid_signature() {
 
 #[tokio::test]
 async fn test_authenticated_endpoint_with_invalid_auth_header() {
-    let (_, port, _) = setup_mock_gateway().await;
+    let (_, port, _) = setup_mock_gateway(false).await;
 
     let response = reqwest::Client::new()
         .get(format!(
@@ -336,7 +445,7 @@ async fn test_authenticated_endpoint_with_invalid_auth_header() {
 
 #[tokio::test]
 async fn test_authenticated_endpoint_without_auth_header() {
-    let (_, port, _) = setup_mock_gateway().await;
+    let (_, port, _) = setup_mock_gateway(false).await;
 
     let response = reqwest::Client::new()
         .get(format!(
@@ -355,7 +464,7 @@ async fn test_authenticated_endpoint_without_auth_header() {
 
 #[tokio::test]
 async fn test_authenticated_endpoint_with_non_utf8_body() {
-    let (_, port, keypair) = setup_mock_gateway().await;
+    let (_, port, keypair) = setup_mock_gateway(false).await;
     let key_id = format!("ed25519:{}", keypair.version());
 
     let method = "PUT";

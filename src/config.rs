@@ -20,7 +20,8 @@ pub struct ExternalHomeserverConfig {
     pub client_domain: String,
     pub verify_keys: BTreeMap<String, String>,
     /// Name of the ruleset to apply for this homeserver.
-    pub ruleset: String,
+    /// If omitted, the default ruleset is used.
+    pub ruleset: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -104,7 +105,9 @@ impl BorderGatewayConfig {
         // Collect all unique ruleset names referenced by external homeservers
         let mut ruleset_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for homeserver in &self.external_homeservers {
-            ruleset_names.insert(homeserver.ruleset.clone());
+            if let Some(ref name) = homeserver.ruleset {
+                ruleset_names.insert(name.clone());
+            }
         }
 
         // Load each ruleset from its external file
