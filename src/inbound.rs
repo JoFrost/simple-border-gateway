@@ -15,6 +15,7 @@ use http::{Request, StatusCode};
 use log::Level;
 use reqwest::Body;
 use ruma::{api::federation::authentication::XMatrix, serde::Base64};
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct InboundHandler {
@@ -39,7 +40,7 @@ impl GatewayHandler for InboundHandler {
 
         // Checking Well known endpoints before doing anything. The well known endpoints will ALWAYS be allowed,
         // as they are essential for federations to work properly.
-        // Those endpoints cannot be overriden by rulesets.
+        // Those endpoints cannot be overriden by rulesets, at least in inbound mode.
         if let Some(endpoint) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
             if endpoint.rule.endpoint_type == EndpointType::WellKnown
                 && endpoint.rule.inbound_action == Action::Allow
@@ -49,10 +50,15 @@ impl GatewayHandler for InboundHandler {
             }
         }
 
-        // If rdns failed (returns IP address or localhost), try to extract origin from Authorization header
-        // localhost here is treated as a failure case, as we are supposed to get something else than localhost in normal cases...
+        // If rdns failed (returns IP address or localhost), or we don't recognize the server, try to extract the origin from Authorization header.
+        // Checking the Authorization header also address an edge case where rdns returns a pod address, which may prevent the ruleset from being applied if the pod address is not included in the ruleset configuration.
+        // By extracting the origin server name from the Authorization header, we can still apply the correct ruleset based on the actual server name, even if rdns fails to resolve it properly.
+        // Localhost here is treated as a failure case, as we are supposed to get something else than localhost in normal cases...
         if ctx.origin_server_name.parse::<std::net::IpAddr>().is_ok()
             || ctx.origin_server_name == "localhost"
+            || !self
+                .server_rulesets
+                .contains_key(ctx.origin_server_name.as_str())
         {
             if let Some(auth_header) = ctx.parts.headers.get("Authorization") {
                 if let Ok(auth_str) = auth_header.to_str() {
@@ -71,14 +77,11 @@ impl GatewayHandler for InboundHandler {
             .map(|r| r.additional_endpoints.as_slice())
             .unwrap_or(&[]);
 
-        ctx.log(
-            Level::Debug,
-            &format!(
-                "Ruleset lookup for server '{}': found ruleset: {}, additional endpoints: {}",
-                ctx.origin_server_name,
-                ruleset.is_some(),
-                additional.len()
-            ),
+        debug!(
+            "Ruleset lookup (inbound) for server '{}': found ruleset: {}, additional endpoints: {}",
+            ctx.origin_server_name,
+            ruleset.is_some(),
+            additional.len()
         );
 
         // Two-tier lookup: additional endpoints take precedence, then fall back to the default ruleset.
@@ -105,12 +108,9 @@ impl GatewayHandler for InboundHandler {
 
         let is_override = has_override || is_from_additional;
 
-        ctx.log(
-            Level::Debug,
-            &format!(
+        debug!(
             "Matched endpoint: {}, is_from_additional: {}, has_override: {}, inbound_action: {:?}",
             endpoint.id, is_from_additional, has_override, inbound_action
-        ),
         );
 
         // When reject all by default is set, we reject non well known endpoint matches

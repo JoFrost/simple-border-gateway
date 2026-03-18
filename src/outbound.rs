@@ -8,6 +8,7 @@ use log::Level;
 use regex::Regex;
 use reqwest::Body;
 use snafu::{ResultExt, Whatever};
+use tracing::debug;
 
 use crate::{
     http_gateway::{
@@ -58,6 +59,13 @@ impl GatewayHandler for OutboundHandler {
             .map(|r| r.additional_endpoints.as_slice())
             .unwrap_or(&[]);
 
+        debug!(
+            "Ruleset lookup (outbound) for server '{}': found ruleset: {}, additional endpoints: {}",
+            ctx.destination_server_name,
+            ruleset.is_some(),
+            additional.len()
+        );
+
         // Two-tier lookup: additional endpoints take precedence, then fall back to the default ruleset.
         let (endpoint, is_from_additional) =
             if let Some(ep) = get_matching_endpoint(&ctx.parts, additional) {
@@ -81,6 +89,11 @@ impl GatewayHandler for OutboundHandler {
             };
 
         let is_override = has_override || is_from_additional;
+
+        debug!(
+            "Matched endpoint: {}, is_from_additional: {}, has_override: {}, outbound_action: {:?}",
+            endpoint.id, is_from_additional, has_override, outbound_action
+        );
 
         // When the reject all mode is enabled, we reject EVERYTHING not overridden.
         // No exceptions are made here, unlike the inbound mode.
