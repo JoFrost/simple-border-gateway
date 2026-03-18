@@ -6,8 +6,8 @@ use simple_border_gateway::inbound::InboundHandler;
 use simple_border_gateway::matrix::util::NameResolver;
 use simple_border_gateway::outbound::OutboundHandler;
 use simple_border_gateway::util::{
-    build_regex_endpoints_from_config, create_http_client, crypto_provider,
-    install_crypto_provider, read_pem, RegexEndpoint,
+    build_regex_endpoints_from_endpoint_configs, compile_override_rules, create_http_client,
+    crypto_provider, install_crypto_provider, read_pem, CompiledRuleset,
 };
 use snafu::{Report, ResultExt, Whatever};
 use tokio::signal::unix::{signal, SignalKind};
@@ -62,17 +62,32 @@ async fn start_services(
         target_base_urls.insert(hs.federation_domain, hs.target_base_url);
     }
 
-    let mut named_rulesets: BTreeMap<String, Vec<RegexEndpoint>> = BTreeMap::new();
+    let mut named_rulesets: BTreeMap<String, CompiledRuleset> = BTreeMap::new();
     for ruleset in &config.rulesets {
-        let endpoints = build_regex_endpoints_from_config(&ruleset.override_rules)
-            .whatever_context(format!("Failed to build ruleset '{}'", ruleset.name))?;
-        named_rulesets.insert(ruleset.name.clone(), endpoints);
+        let additional_endpoints =
+            build_regex_endpoints_from_endpoint_configs(&ruleset.additional_endpoints)
+                .whatever_context(format!(
+                    "Failed to build additional endpoints for ruleset '{}'",
+                    ruleset.name
+                ))?;
+        let action_overrides =
+            compile_override_rules(&ruleset.override_rules).whatever_context(format!(
+                "Failed to compile override rules for ruleset '{}'",
+                ruleset.name
+            ))?;
+        named_rulesets.insert(
+            ruleset.name.clone(),
+            CompiledRuleset {
+                additional_endpoints,
+                action_overrides,
+            },
+        );
     }
 
     let mut allowed_federation_domains: BTreeMap<String, String> = BTreeMap::new();
     let mut allowed_client_domains: BTreeMap<String, String> = BTreeMap::new();
     let mut public_key_map: PublicKeyMap = BTreeMap::new();
-    let mut server_rulesets: BTreeMap<String, Vec<RegexEndpoint>> = BTreeMap::new();
+    let mut server_rulesets: BTreeMap<String, CompiledRuleset> = BTreeMap::new();
 
     for hs in config.external_homeservers {
         domain_server_name_map.insert(hs.federation_domain.clone(), hs.server_name.clone());
@@ -88,14 +103,14 @@ async fn start_services(
             );
         }
 
-        let endpoints = match &hs.ruleset {
+        let compiled_ruleset = match &hs.ruleset {
             Some(name) => match named_rulesets.get(name) {
                 Some(e) => {
                     info!(
                         "Using override ruleset '{}' for homeserver '{}'",
                         name, hs.server_name
                     );
-                    e
+                    e.clone()
                 }
                 None => {
                     snafu::whatever!(
@@ -107,10 +122,13 @@ async fn start_services(
             },
             None => {
                 info!("Using default ruleset for homeserver '{}'", hs.server_name);
-                &vec![]
+                CompiledRuleset {
+                    additional_endpoints: vec![],
+                    action_overrides: BTreeMap::new(),
+                }
             }
         };
-        server_rulesets.insert(hs.server_name.clone(), endpoints.clone());
+        server_rulesets.insert(hs.server_name.clone(), compiled_ruleset);
 
         public_key_map.insert(hs.server_name, verify_keys);
     }

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
 use bytes::Bytes;
@@ -9,7 +10,7 @@ use reqwest::Body;
 use snafu::{ResultExt as _, Whatever};
 
 use crate::{
-    config::RuleConfig,
+    config::EndpointConfig,
     http_gateway::{
         util::{extract_destination_host, extract_origin_ip},
         GatewayDirection,
@@ -34,7 +35,7 @@ pub fn install_crypto_provider() {
 }
 
 /// Runtime representation of a filtering rule that owns its path string.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct RuntimeRule {
     pub(crate) method: Option<Method>,
     pub(crate) endpoint_type: EndpointType,
@@ -43,10 +44,43 @@ pub(crate) struct RuntimeRule {
     pub(crate) outbound_action: Action,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RegexEndpoint {
+    pub(crate) id: String,
     regex: Regex,
     pub(crate) rule: RuntimeRule,
+}
+
+impl RegexEndpoint {
+    /// Build a RegexEndpoint directly from typed values (used by the default ruleset).
+    pub(crate) fn new(
+        id: &str,
+        path: &str,
+        method: Option<Method>,
+        auth_type: AuthType,
+        endpoint_type: EndpointType,
+        inbound_action: Action,
+        outbound_action: Action,
+    ) -> Result<Self, regex::Error> {
+        Ok(Self {
+            id: id.to_string(),
+            regex: path_to_regex(path)?,
+            rule: RuntimeRule {
+                method,
+                endpoint_type,
+                auth_type,
+                inbound_action,
+                outbound_action,
+            },
+        })
+    }
+}
+
+/// A compiled ruleset combining additional endpoint definitions with action overrides.
+#[derive(Clone)]
+pub struct CompiledRuleset {
+    pub additional_endpoints: Vec<RegexEndpoint>,
+    pub action_overrides: BTreeMap<String, (Action, Action)>,
 }
 
 #[allow(clippy::unwrap_used, reason = "lazy static regex")]
@@ -59,68 +93,89 @@ fn path_to_regex(path: &str) -> Result<Regex, regex::Error> {
     Regex::new(&pattern)
 }
 
-/// Convert the rules from the configuration into usable regexes/runtimes rules
-pub fn build_regex_endpoints_from_config(
-    rules: &[RuleConfig],
+/// Convert additional endpoint configs into RegexEndpoints.
+/// Actions default to Reject/Reject since they are expected to be set via override_rules.
+pub fn build_regex_endpoints_from_endpoint_configs(
+    endpoints: &[EndpointConfig],
 ) -> Result<Vec<RegexEndpoint>, Whatever> {
-    rules
+    endpoints
         .iter()
-        .map(|r| {
-            let method = r
+        .map(|e| {
+            let method = e
                 .method
                 .as_deref()
                 .map(|m| {
                     Method::from_bytes(m.as_bytes())
-                        .whatever_context(format!("Invalid method '{}' in ruleset", m))
+                        .whatever_context(format!("Invalid method '{}' in endpoint '{}'", m, e.id))
                 })
                 .transpose()?;
 
-            let auth_type = match r.auth_type.as_deref() {
+            let auth_type = match e.auth_type.as_deref() {
                 None | Some("CheckSignature") => AuthType::CheckSignature,
                 Some("Unauthenticated") => AuthType::Unauthenticated,
-                Some(other) => snafu::whatever!("Unknown auth_type '{}' in ruleset", other),
+                Some(other) => {
+                    snafu::whatever!("Unknown auth_type '{}' in endpoint '{}'", other, e.id)
+                }
             };
 
-            let endpoint_type = match r.endpoint_type.as_deref() {
+            let endpoint_type = match e.endpoint_type.as_deref() {
                 None | Some("Federation") => EndpointType::Federation,
                 Some("WellKnown") => EndpointType::WellKnown,
                 Some("LegacyMedia") => EndpointType::LegacyMedia,
-                Some(other) => snafu::whatever!("Unknown endpoint_type '{}' in ruleset", other),
+                Some(other) => {
+                    snafu::whatever!("Unknown endpoint_type '{}' in endpoint '{}'", other, e.id)
+                }
             };
 
-            let inbound_action = match r.inbound_action.as_deref() {
-                None | Some("reject") => Action::Reject,
-                Some("allow") => Action::Allow,
-                Some(other) => snafu::whatever!(
-                    "Unknown inbound_action '{}' in ruleset (expected 'allow' or 'reject')",
-                    other
-                ),
-            };
-
-            let outbound_action = match r.outbound_action.as_deref() {
-                None | Some("reject") => Action::Reject,
-                Some("allow") => Action::Allow,
-                Some(other) => snafu::whatever!(
-                    "Unknown outbound_action '{}' in ruleset (expected 'allow' or 'reject')",
-                    other
-                ),
-            };
-
-            let regex = path_to_regex(&r.path)
-                .whatever_context(format!("Invalid path pattern '{}' in ruleset", r.path))?;
+            let regex = path_to_regex(&e.path).whatever_context(format!(
+                "Invalid path pattern '{}' in endpoint '{}'",
+                e.path, e.id
+            ))?;
 
             Ok(RegexEndpoint {
+                id: e.id.clone(),
                 regex,
                 rule: RuntimeRule {
                     method,
                     endpoint_type,
                     auth_type,
-                    inbound_action,
-                    outbound_action,
+                    inbound_action: Action::Reject,
+                    outbound_action: Action::Reject,
                 },
             })
         })
         .collect()
+}
+
+/// Compile override rules into a map of endpoint ID → (inbound_action, outbound_action).
+pub fn compile_override_rules(
+    rules: &[crate::config::OverrideRuleConfig],
+) -> Result<BTreeMap<String, (Action, Action)>, Whatever> {
+    let mut map = BTreeMap::new();
+    for r in rules {
+        let inbound_action = match r.inbound_action.as_deref() {
+            None | Some("reject") | Some("disallow") => Action::Reject,
+            Some("allow") => Action::Allow,
+            Some(other) => snafu::whatever!(
+                "Unknown inbound_action '{}' for endpoint '{}' (expected 'allow' or 'reject')",
+                other,
+                r.endpoint
+            ),
+        };
+
+        let outbound_action = match r.outbound_action.as_deref() {
+            None | Some("reject") | Some("disallow") => Action::Reject,
+            Some("allow") => Action::Allow,
+            Some(other) => snafu::whatever!(
+                "Unknown outbound_action '{}' for endpoint '{}' (expected 'allow' or 'reject')",
+                other,
+                r.endpoint
+            ),
+        };
+
+        map.insert(r.endpoint.clone(), (inbound_action, outbound_action));
+    }
+    Ok(map)
 }
 
 pub(crate) fn get_matching_endpoint<'a>(
