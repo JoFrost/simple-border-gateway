@@ -214,7 +214,7 @@ async fn test_custom_endpoint() {
         then.status(200);
     });
 
-    // Despite the default ruleset being in reject all mode, this endpoint is explicitly allowed in the override ruleset, so it should be accepted.
+    // Should be accepted as it's an allowed custom endpoint
     let response = client
         .get("https://federation.target.org/.well-known/matrix/element_call")
         .send()
