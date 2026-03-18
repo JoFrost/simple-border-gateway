@@ -3,14 +3,14 @@ use http::Method;
 use once_cell::sync::Lazy;
 
 #[derive(Clone, PartialEq, Debug)]
-pub(crate) enum EndpointType {
+pub enum EndpointType {
     Federation,
     WellKnown,
     LegacyMedia,
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub(crate) enum AuthType {
+pub enum AuthType {
     Unauthenticated,
     CheckSignature,
 }

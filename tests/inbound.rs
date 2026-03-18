@@ -1,4 +1,4 @@
-use http::StatusCode;
+use http::{Method, StatusCode};
 use rand::Rng;
 use reqwest::Body;
 use ruma::serde::Base64;
@@ -6,11 +6,10 @@ use ruma::signatures::{sign_json, Ed25519KeyPair};
 use ruma::CanonicalJsonValue;
 use simple_border_gateway::http_gateway::inbound::InboundGatewayBuilder;
 use simple_border_gateway::inbound::InboundHandler;
+use simple_border_gateway::matrix::spec::{Action, AuthType, EndpointType};
 use simple_border_gateway::matrix::util::NameResolver;
-use simple_border_gateway::util::{install_crypto_provider, CompiledRuleset};
+use simple_border_gateway::util::{install_crypto_provider, CompiledRuleset, RegexEndpoint};
 use std::collections::BTreeMap;
-
-use simple_border_gateway::matrix::spec::Action;
 
 fn no_overridden_ruleset() -> CompiledRuleset {
     CompiledRuleset {
@@ -22,7 +21,16 @@ fn no_overridden_ruleset() -> CompiledRuleset {
 /// Minimal ruleset for the tests: overrides actions on some default endpoints
 fn test_ruleset() -> CompiledRuleset {
     CompiledRuleset {
-        additional_endpoints: vec![],
+        additional_endpoints: vec![RegexEndpoint::new(
+            "well_known_element_call",
+            "/.well-known/matrix/element_call",
+            Some(Method::GET),
+            AuthType::Unauthenticated,
+            EndpointType::WellKnown,
+            Action::Allow,
+            Action::Allow,
+        )
+        .expect("Invalid endpoint definition")],
         action_overrides: BTreeMap::from([
             ("query_profile".to_string(), (Action::Allow, Action::Allow)),
             (
@@ -120,6 +128,33 @@ async fn test_invalid_endpoint() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// Test a custom endpoint added in the ruleset.
+// This endpoint is on purpose not part of the default ruleset.
+#[tokio::test]
+async fn test_custom_endpoint() {
+    let (mock_server, port, _) = setup_mock_gateway(false, false).await;
+
+    let mut mock = mock_server.mock(|when, then| {
+        when.method("GET").path("/.well-known/matrix/element_call");
+        then.status(200);
+    });
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "http://localhost:{}/.well-known/matrix/element_call",
+            port
+        ))
+        .header("X-Forwarded-Host", "target.org")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    mock.assert();
+
+    mock.delete();
 }
 
 #[tokio::test]

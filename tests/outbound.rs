@@ -1,4 +1,4 @@
-use http::{Request, Response, StatusCode};
+use http::{Method, Request, Response, StatusCode};
 use rand::Rng;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 use reqwest::{Body, Proxy};
@@ -6,11 +6,11 @@ use simple_border_gateway::http_gateway::outbound::OutboundGatewayBuilder;
 use simple_border_gateway::http_gateway::{
     GatewayDirection, GatewayForwardError, GatewayHandler, RequestOrResponse,
 };
-use simple_border_gateway::matrix::spec::Action;
+use simple_border_gateway::matrix::spec::{Action, AuthType, EndpointType};
 use simple_border_gateway::matrix::util::NameResolver;
 use simple_border_gateway::outbound::OutboundHandler;
 use simple_border_gateway::util::{
-    create_http_client, crypto_provider, install_crypto_provider, CompiledRuleset,
+    create_http_client, crypto_provider, install_crypto_provider, CompiledRuleset, RegexEndpoint,
 };
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -100,7 +100,16 @@ async fn setup_mock_gateway(
         BTreeMap::from([(
             "target.org".to_string(),
             CompiledRuleset {
-                additional_endpoints: vec![],
+                additional_endpoints: vec![RegexEndpoint::new(
+                    "well_known_element_call",
+                    "/.well-known/matrix/element_call",
+                    Some(Method::GET),
+                    AuthType::Unauthenticated,
+                    EndpointType::WellKnown,
+                    Action::Allow,
+                    Action::Allow,
+                )
+                .expect("Invalid endpoint definition")],
                 action_overrides: BTreeMap::from([
                     ("query_profile".to_string(), (Action::Allow, Action::Allow)),
                     ("3pid_onbind".to_string(), (Action::Reject, Action::Reject)),
@@ -193,6 +202,29 @@ async fn test_valid_federation_request_from_rejected_whitelist() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+// Test a custom endpoint added in the ruleset.
+#[tokio::test]
+async fn test_custom_endpoint() {
+    let (mock_server, client) = setup_mock_gateway(None, false).await;
+
+    let mut mock = mock_server.mock(|when, then| {
+        when.method("GET").path("/.well-known/matrix/element_call");
+        then.status(200);
+    });
+
+    // Despite the default ruleset being in reject all mode, this endpoint is explicitly allowed in the override ruleset, so it should be accepted.
+    let response = client
+        .get("https://federation.target.org/.well-known/matrix/element_call")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    mock.assert();
+
+    mock.delete();
 }
 
 #[tokio::test]

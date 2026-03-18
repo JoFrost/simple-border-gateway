@@ -36,24 +36,24 @@ pub fn install_crypto_provider() {
 
 /// Runtime representation of a filtering rule that owns its path string.
 #[derive(Clone, Debug)]
-pub(crate) struct RuntimeRule {
-    pub(crate) method: Option<Method>,
-    pub(crate) endpoint_type: EndpointType,
-    pub(crate) auth_type: AuthType,
-    pub(crate) inbound_action: Action,
-    pub(crate) outbound_action: Action,
+pub struct RuntimeRule {
+    pub method: Option<Method>,
+    pub endpoint_type: EndpointType,
+    pub auth_type: AuthType,
+    pub inbound_action: Action,
+    pub outbound_action: Action,
 }
 
 #[derive(Clone, Debug)]
 pub struct RegexEndpoint {
-    pub(crate) id: String,
+    pub id: String,
     regex: Regex,
-    pub(crate) rule: RuntimeRule,
+    pub rule: RuntimeRule,
 }
 
 impl RegexEndpoint {
     /// Build a RegexEndpoint directly from typed values (used by the default ruleset).
-    pub(crate) fn new(
+    pub fn new(
         id: &str,
         path: &str,
         method: Option<Method>,
