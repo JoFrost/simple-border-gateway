@@ -1,49 +1,48 @@
-use http::StatusCode;
+use http::{Method, StatusCode};
 use rand::Rng;
 use reqwest::Body;
 use ruma::serde::Base64;
 use ruma::signatures::{sign_json, Ed25519KeyPair};
 use ruma::CanonicalJsonValue;
-use simple_border_gateway::config::RuleConfig;
 use simple_border_gateway::http_gateway::inbound::InboundGatewayBuilder;
 use simple_border_gateway::inbound::InboundHandler;
+use simple_border_gateway::matrix::spec::{Action, AuthType, EndpointType};
 use simple_border_gateway::matrix::util::NameResolver;
-use simple_border_gateway::util::{build_regex_endpoints_from_config, install_crypto_provider};
+use simple_border_gateway::util::{install_crypto_provider, CompiledRuleset, RegexEndpoint};
 use std::collections::BTreeMap;
 
-// Here to test the correct usage of the default ruleset if we did not specify any ruleset for a server
-fn no_overriden_rules() -> Vec<RuleConfig> {
-    vec![]
+fn no_overridden_ruleset() -> CompiledRuleset {
+    CompiledRuleset {
+        additional_endpoints: vec![],
+        action_overrides: BTreeMap::new(),
+    }
 }
 
-/// Minimal ruleset for the tests
-fn test_rules() -> Vec<RuleConfig> {
-    vec![
-        RuleConfig {
-            path: "/_matrix/federation/v1/query/profile".to_string(),
-            method: Some("GET".to_string()),
-            auth_type: None,
-            endpoint_type: None,
-            inbound_action: Some("allow".to_string()),
-            outbound_action: Some("allow".to_string()),
-        },
-        RuleConfig {
-            path: "/_matrix/key/v2/query".to_string(),
-            method: Some("POST".to_string()),
-            auth_type: Some("Unauthenticated".to_string()),
-            endpoint_type: Some("Federation".to_string()),
-            inbound_action: Some("reject".to_string()),
-            outbound_action: Some("reject".to_string()),
-        },
-        RuleConfig {
-            path: "/_matrix/federation/v1/send/{txnId}".to_string(),
-            method: Some("PUT".to_string()),
-            auth_type: None,
-            endpoint_type: None,
-            inbound_action: Some("allow".to_string()),
-            outbound_action: Some("allow".to_string()),
-        },
-    ]
+/// Minimal ruleset for the tests: overrides actions on some default endpoints
+fn test_ruleset() -> CompiledRuleset {
+    CompiledRuleset {
+        additional_endpoints: vec![RegexEndpoint::new(
+            "well_known_element_call",
+            "/.well-known/matrix/element_call",
+            Some(Method::GET),
+            AuthType::Unauthenticated,
+            EndpointType::WellKnown,
+            Action::Allow,
+            Action::Allow,
+        )
+        .expect("Invalid endpoint definition")],
+        action_overrides: BTreeMap::from([
+            ("query_profile".to_string(), (Action::Allow, Action::Allow)),
+            (
+                "key_v2_query_post".to_string(),
+                (Action::Reject, Action::Reject),
+            ),
+            (
+                "send_transaction".to_string(),
+                (Action::Allow, Action::Allow),
+            ),
+        ]),
+    }
 }
 
 async fn setup_mock_gateway(
@@ -75,9 +74,9 @@ async fn setup_mock_gateway(
     public_key_map.insert("origin.org".to_string(), mock_server_key);
 
     let ruleset = if no_overridden_rules {
-        no_overriden_rules()
+        no_overridden_ruleset()
     } else {
-        test_rules()
+        test_ruleset()
     };
 
     let handler = InboundHandler::new(
@@ -86,14 +85,8 @@ async fn setup_mock_gateway(
         // Localhost is considered as a failure case for the name resolution
         // It's used here mainly to test the not found case for the server ruleset, but also to test the fallback to the Authorization header parsing
         BTreeMap::from([
-            (
-                "localhost".to_string(),
-                build_regex_endpoints_from_config(&ruleset).unwrap(),
-            ),
-            (
-                "origin.org".to_string(),
-                build_regex_endpoints_from_config(&ruleset).unwrap(),
-            ),
+            ("localhost".to_string(), ruleset.clone()),
+            ("origin.org".to_string(), ruleset),
         ]),
         reject_all_by_default,
     );
@@ -135,6 +128,33 @@ async fn test_invalid_endpoint() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// Test a custom endpoint added in the ruleset.
+// This endpoint is on purpose not part of the default ruleset.
+#[tokio::test]
+async fn test_custom_endpoint() {
+    let (mock_server, port, _) = setup_mock_gateway(false, false).await;
+
+    let mut mock = mock_server.mock(|when, then| {
+        when.method("GET").path("/.well-known/matrix/element_call");
+        then.status(200);
+    });
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "http://localhost:{}/.well-known/matrix/element_call",
+            port
+        ))
+        .header("X-Forwarded-Host", "target.org")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    mock.assert();
+
+    mock.delete();
 }
 
 #[tokio::test]
@@ -209,7 +229,7 @@ fn sign_request(
 
 #[tokio::test]
 // We have the reject all mode on, however, we also have an override that allows /_matrix/federation/v1/query/profile to go through.
-// The result here should be a 200, as the ghateway should let it through.
+// The result here should be a 200, as the gateway should let it through.
 async fn test_authenticated_endpoint_with_override_ruleset() {
     let (mock_server, port, keypair) = setup_mock_gateway(false, true).await;
     let key_id = format!("ed25519:{}", keypair.version());

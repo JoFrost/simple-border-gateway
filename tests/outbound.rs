@@ -1,16 +1,16 @@
-use http::{Request, Response, StatusCode};
+use http::{Method, Request, Response, StatusCode};
 use rand::Rng;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 use reqwest::{Body, Proxy};
-use simple_border_gateway::config::RuleConfig;
 use simple_border_gateway::http_gateway::outbound::OutboundGatewayBuilder;
 use simple_border_gateway::http_gateway::{
     GatewayDirection, GatewayForwardError, GatewayHandler, RequestOrResponse,
 };
+use simple_border_gateway::matrix::spec::{Action, AuthType, EndpointType};
 use simple_border_gateway::matrix::util::NameResolver;
 use simple_border_gateway::outbound::OutboundHandler;
 use simple_border_gateway::util::{
-    build_regex_endpoints_from_config, create_http_client, crypto_provider, install_crypto_provider,
+    create_http_client, crypto_provider, install_crypto_provider, CompiledRuleset, RegexEndpoint,
 };
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -99,33 +99,23 @@ async fn setup_mock_gateway(
         vec!["https://matrix\\.org/_matrix/push/v1/notify".to_string()],
         BTreeMap::from([(
             "target.org".to_string(),
-            build_regex_endpoints_from_config(&[
-                RuleConfig {
-                    path: "/_matrix/federation/v1/query/profile".to_string(),
-                    method: Some("GET".to_string()),
-                    auth_type: None,
-                    endpoint_type: None,
-                    inbound_action: Some("allow".to_string()),
-                    outbound_action: Some("allow".to_string()),
-                },
-                RuleConfig {
-                    path: "/_matrix/federation/v1/3pid/onbind".to_string(),
-                    method: Some("PUT".to_string()),
-                    auth_type: None,
-                    endpoint_type: None,
-                    inbound_action: Some("reject".to_string()),
-                    outbound_action: Some("reject".to_string()),
-                },
-                RuleConfig {
-                    path: "/_matrix/media/{path}".to_string(),
-                    method: Some("GET".to_string()),
-                    auth_type: Some("Unauthenticated".to_string()),
-                    endpoint_type: Some("LegacyMedia".to_string()),
-                    inbound_action: Some("allow".to_string()),
-                    outbound_action: Some("allow".to_string()),
-                },
-            ])
-            .unwrap(),
+            CompiledRuleset {
+                additional_endpoints: vec![RegexEndpoint::new(
+                    "well_known_element_call",
+                    "/.well-known/matrix/element_call",
+                    Some(Method::GET),
+                    AuthType::Unauthenticated,
+                    EndpointType::WellKnown,
+                    Action::Allow,
+                    Action::Allow,
+                )
+                .expect("Invalid endpoint definition")],
+                action_overrides: BTreeMap::from([
+                    ("query_profile".to_string(), (Action::Allow, Action::Allow)),
+                    ("3pid_onbind".to_string(), (Action::Reject, Action::Reject)),
+                    ("legacy_media".to_string(), (Action::Allow, Action::Allow)),
+                ]),
+            },
         )]),
         reject_all_by_default,
     )
@@ -212,6 +202,29 @@ async fn test_valid_federation_request_from_rejected_whitelist() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+// Test a custom endpoint added in the ruleset.
+#[tokio::test]
+async fn test_custom_endpoint() {
+    let (mock_server, client) = setup_mock_gateway(None, false).await;
+
+    let mut mock = mock_server.mock(|when, then| {
+        when.method("GET").path("/.well-known/matrix/element_call");
+        then.status(200);
+    });
+
+    // Should be accepted as it's an allowed custom endpoint
+    let response = client
+        .get("https://federation.target.org/.well-known/matrix/element_call")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    mock.assert();
+
+    mock.delete();
 }
 
 #[tokio::test]

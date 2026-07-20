@@ -8,6 +8,7 @@ use log::Level;
 use regex::Regex;
 use reqwest::Body;
 use snafu::{ResultExt, Whatever};
+use tracing::debug;
 
 use crate::{
     http_gateway::{
@@ -17,7 +18,7 @@ use crate::{
         spec::{Action, EndpointType, DEFAULT_RULESET},
         util::{create_matrix_response, NameResolver},
     },
-    util::{get_matching_endpoint, remove_default_ports_from_uri, RegexEndpoint, RequestContext},
+    util::{get_matching_endpoint, remove_default_ports_from_uri, CompiledRuleset, RequestContext},
 };
 
 #[derive(Clone)]
@@ -27,8 +28,8 @@ pub struct OutboundHandler {
     allowed_federation_domains: HashSet<String>,
     allowed_client_domains: HashSet<String>,
     allowed_non_matrix_regexes: Vec<Regex>,
-    /// Per-server-name override ruleset.
-    server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
+    /// Per-server-name compiled ruleset.
+    server_rulesets: BTreeMap<String, CompiledRuleset>,
     /// When true, the default ruleset will reject everything that is not explicitly allowed by an override rule.
     reject_all_by_default: bool,
 }
@@ -53,32 +54,58 @@ impl GatewayHandler for OutboundHandler {
         }
 
         // Use override rules if server has a configured ruleset, otherwise fall through to the default ruleset.
-        let server_rules = self
-            .server_rulesets
-            .get(&ctx.destination_server_name)
-            .map(Vec::as_slice)
+        let ruleset = self.server_rulesets.get(&ctx.destination_server_name);
+        let additional = ruleset
+            .map(|r| r.additional_endpoints.as_slice())
             .unwrap_or(&[]);
 
-        // Two-tier lookup: override rules take precedence, then fall back to the default ruleset.
-        let endpoint = if let Some(ep) = get_matching_endpoint(&ctx.parts, server_rules) {
-            ep
-        } else if let Some(ep) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
-            // When the reject all mode is enabled, we reject EVERYTHING not overriden.
-            // No exceptions are made here, unlike the inbound mode.
-            if self.reject_all_by_default {
-                ctx.log(
-                    Level::Warn,
-                    "403 - forbidden, endpoint rejected by default ruleset due to policy",
-                );
-                return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
-            }
-            ep
-        } else {
-            ctx.log(Level::Warn, "404 - not found, unknown endpoint");
-            return create_status_response(StatusCode::NOT_FOUND).into();
-        };
+        debug!(
+            "Ruleset lookup (outbound) for server '{}': found ruleset: {}, additional endpoints: {}",
+            ctx.destination_server_name,
+            ruleset.is_some(),
+            additional.len()
+        );
 
-        if endpoint.rule.outbound_action == Action::Reject {
+        // Two-tier lookup: additional endpoints take precedence, then fall back to the default ruleset.
+        let (endpoint, is_from_additional) =
+            if let Some(ep) = get_matching_endpoint(&ctx.parts, additional) {
+                (ep, true)
+            } else if let Some(ep) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
+                (ep, false)
+            } else {
+                ctx.log(Level::Warn, "404 - not found, unknown endpoint");
+                return create_status_response(StatusCode::NOT_FOUND).into();
+            };
+
+        // Determine effective actions: check override_rules by endpoint ID, otherwise use the endpoint's defaults.
+        let has_override = ruleset
+            .and_then(|r| r.action_overrides.get(&endpoint.id))
+            .is_some();
+        let (_, outbound_action) =
+            if let Some(&actions) = ruleset.and_then(|r| r.action_overrides.get(&endpoint.id)) {
+                actions
+            } else {
+                (endpoint.rule.inbound_action, endpoint.rule.outbound_action)
+            };
+
+        let is_override = has_override || is_from_additional;
+
+        debug!(
+            "Matched endpoint: {}, is_from_additional: {}, has_override: {}, outbound_action: {:?}",
+            endpoint.id, is_from_additional, has_override, outbound_action
+        );
+
+        // When the reject all mode is enabled, we reject EVERYTHING not overridden.
+        // No exceptions are made here, unlike the inbound mode.
+        if !is_override && self.reject_all_by_default {
+            ctx.log(
+                Level::Warn,
+                "403 - forbidden, endpoint rejected by default ruleset due to policy",
+            );
+            return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
+        }
+
+        if outbound_action == Action::Reject {
             ctx.log(Level::Warn, "403 - forbidden, endpoint rejected by ruleset");
             return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
         }
@@ -126,7 +153,7 @@ impl OutboundHandler {
         allowed_federation_domains: BTreeMap<String, String>,
         allowed_client_domains: BTreeMap<String, String>,
         allowed_non_matrix_regexes: Vec<String>,
-        server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
+        server_rulesets: BTreeMap<String, CompiledRuleset>,
         reject_all_by_default: bool,
     ) -> Result<Self, Whatever> {
         let mut allowed_server_names =

@@ -30,9 +30,10 @@ pub struct UpstreamProxyAuth {
     pub password: String,
 }
 
-/// A single filtering rule for an endpoint path/method.
+/// An endpoint definition with a unique ID, path pattern, and optional method/auth/type constraints.
 #[derive(Deserialize, Serialize)]
-pub struct RuleConfig {
+pub struct EndpointConfig {
+    pub id: String,
     pub path: String,
     /// HTTP method to match. Omit to match any method.
     pub method: Option<String>,
@@ -40,9 +41,17 @@ pub struct RuleConfig {
     pub auth_type: Option<String>,
     /// Defaults to `"Federation"` when absent.
     pub endpoint_type: Option<String>,
-    /// `"allow"` or `"reject"`. Defaults to `"reject"` when absent.
+}
+
+/// An override rule that references an endpoint by ID and specifies actions.
+/// The endpoint can be a default endpoint or an additional endpoint.
+#[derive(Deserialize, Serialize)]
+pub struct OverrideRuleConfig {
+    /// ID of the endpoint to override (from the default ruleset or an additional endpoint).
+    pub endpoint: String,
+    /// `"allow"`, `"disallow"` or `"reject"`. Defaults to `"reject/disallow"` when absent.
     pub inbound_action: Option<String>,
-    /// `"allow"` or `"reject"`. Defaults to `"reject"` when absent.
+    /// `"allow"`, `"disallow"` or `"reject"`. Defaults to `"reject/disallow"` when absent.
     pub outbound_action: Option<String>,
 }
 
@@ -53,7 +62,9 @@ pub struct RulesetConfig {
     #[serde(skip_deserializing, default)]
     pub name: String,
     #[serde(default)]
-    pub override_rules: Vec<RuleConfig>,
+    pub additional_endpoints: Vec<EndpointConfig>,
+    #[serde(default)]
+    pub override_rules: Vec<OverrideRuleConfig>,
 }
 
 #[derive(Deserialize, Serialize)]

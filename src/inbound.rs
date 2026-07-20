@@ -9,19 +9,20 @@ use crate::{
         util::{create_matrix_response, NameResolver},
         xmatrix::verify_signature,
     },
-    util::{get_matching_endpoint, to_bytes, RegexEndpoint, RequestContext},
+    util::{get_matching_endpoint, to_bytes, CompiledRuleset, RequestContext},
 };
 use http::{Request, StatusCode};
 use log::Level;
 use reqwest::Body;
 use ruma::{api::federation::authentication::XMatrix, serde::Base64};
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct InboundHandler {
     name_resolver: NameResolver,
     public_key_map: BTreeMap<String, BTreeMap<String, Base64>>,
-    /// Per-server-name override ruleset.
-    server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
+    /// Per-server-name compiled ruleset.
+    server_rulesets: BTreeMap<String, CompiledRuleset>,
     /// When true, all non well-known endpoint matches are rejected unless an override rule explicitly allows them.
     reject_all_by_default: bool,
 }
@@ -39,7 +40,7 @@ impl GatewayHandler for InboundHandler {
 
         // Checking Well known endpoints before doing anything. The well known endpoints will ALWAYS be allowed,
         // as they are essential for federations to work properly.
-        // Those endpoints cannot be overriden by rulesets.
+        // Those endpoints cannot be overriden by rulesets, at least in inbound mode.
         if let Some(endpoint) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
             if endpoint.rule.endpoint_type == EndpointType::WellKnown
                 && endpoint.rule.inbound_action == Action::Allow
@@ -49,10 +50,15 @@ impl GatewayHandler for InboundHandler {
             }
         }
 
-        // If rdns failed (returns IP address or localhost), try to extract origin from Authorization header
-        // localhost here is treated as a failure case, as we are supposed to get something else than localhost in normal cases...
+        // If rdns failed (returns IP address or localhost), or we don't recognize the server, try to extract the origin from Authorization header.
+        // Checking the Authorization header also address an edge case where rdns returns a pod address, which may prevent the ruleset from being applied if the pod address is not included in the ruleset configuration.
+        // By extracting the origin server name from the Authorization header, we can still apply the correct ruleset based on the actual server name, even if rdns fails to resolve it properly.
+        // Localhost here is treated as a failure case, as we are supposed to get something else than localhost in normal cases...
         if ctx.origin_server_name.parse::<std::net::IpAddr>().is_ok()
             || ctx.origin_server_name == "localhost"
+            || !self
+                .server_rulesets
+                .contains_key(ctx.origin_server_name.as_str())
         {
             if let Some(auth_header) = ctx.parts.headers.get("Authorization") {
                 if let Ok(auth_str) = auth_header.to_str() {
@@ -66,16 +72,21 @@ impl GatewayHandler for InboundHandler {
         }
 
         // Use override rules if server has a configured ruleset, otherwise fall through to the default ruleset.
-        let server_rules = self
-            .server_rulesets
-            .get(&ctx.origin_server_name)
-            .map(Vec::as_slice)
+        let ruleset = self.server_rulesets.get(&ctx.origin_server_name);
+        let additional = ruleset
+            .map(|r| r.additional_endpoints.as_slice())
             .unwrap_or(&[]);
 
-        // Two-tier lookup: override rules take precedence, then fall back to the default ruleset.
-        // We track here whether the match came from an override rule.
-        let (endpoint, is_override) =
-            if let Some(ep) = get_matching_endpoint(&ctx.parts, server_rules) {
+        debug!(
+            "Ruleset lookup (inbound) for server '{}': found ruleset: {}, additional endpoints: {}",
+            ctx.origin_server_name,
+            ruleset.is_some(),
+            additional.len()
+        );
+
+        // Two-tier lookup: additional endpoints take precedence, then fall back to the default ruleset.
+        let (endpoint, is_from_additional) =
+            if let Some(ep) = get_matching_endpoint(&ctx.parts, additional) {
                 (ep, true)
             } else if let Some(ep) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
                 (ep, false)
@@ -83,6 +94,24 @@ impl GatewayHandler for InboundHandler {
                 ctx.log(Level::Warn, "404 - not found, unknown endpoint");
                 return create_status_response(StatusCode::NOT_FOUND).into();
             };
+
+        // Determine effective actions: check the override rules by their endpoint ID, otherwise use the endpoint's defaults.
+        let has_override = ruleset
+            .and_then(|r| r.action_overrides.get(&endpoint.id))
+            .is_some();
+        let (inbound_action, _) =
+            if let Some(&actions) = ruleset.and_then(|r| r.action_overrides.get(&endpoint.id)) {
+                actions
+            } else {
+                (endpoint.rule.inbound_action, endpoint.rule.outbound_action)
+            };
+
+        let is_override = has_override || is_from_additional;
+
+        debug!(
+            "Matched endpoint: {}, is_from_additional: {}, has_override: {}, inbound_action: {:?}",
+            endpoint.id, is_from_additional, has_override, inbound_action
+        );
 
         // When reject all by default is set, we reject non well known endpoint matches
         // unless an override rule explicitly allowed them.
@@ -97,17 +126,14 @@ impl GatewayHandler for InboundHandler {
         // Verifying the auth type, and if a specific endpoint is authorized or not.
         match endpoint.rule.auth_type {
             AuthType::Unauthenticated => {
-                if endpoint.rule.inbound_action == Action::Reject {
+                if inbound_action == Action::Reject {
                     ctx.log(Level::Warn, "403 - forbidden, endpoint rejected by ruleset");
                     return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
                 }
                 ctx.log(Level::Info, "forward, unauthenticated endpoint");
                 Request::from_parts(ctx.parts, body).into()
             }
-            AuthType::CheckSignature => {
-                self.check_signature(ctx, body, endpoint.rule.inbound_action)
-                    .await
-            }
+            AuthType::CheckSignature => self.check_signature(ctx, body, inbound_action).await,
         }
     }
 }
@@ -116,7 +142,7 @@ impl InboundHandler {
     pub fn new(
         name_resolver: NameResolver,
         public_key_map: BTreeMap<String, BTreeMap<String, Base64>>,
-        server_rulesets: BTreeMap<String, Vec<RegexEndpoint>>,
+        server_rulesets: BTreeMap<String, CompiledRuleset>,
         reject_all_by_default: bool,
     ) -> Self {
         Self {
