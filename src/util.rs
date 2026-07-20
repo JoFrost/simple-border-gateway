@@ -162,23 +162,27 @@ pub fn create_http_client(
     additional_root_certs: Vec<String>,
     upstream_proxy_url: Option<String>,
 ) -> Result<reqwest::Client, Whatever> {
-    let mut builder = reqwest::Client::builder().use_rustls_tls();
+    let mut builder = reqwest::Client::builder();
+    // builder.
     if let Some(upstream_proxy_url) = upstream_proxy_url {
         builder = builder.proxy(
             reqwest::Proxy::all(upstream_proxy_url)
                 .whatever_context("Failed to create reqwest proxy config")?,
         );
     }
-    for cert in additional_root_certs {
-        builder = builder.add_root_certificate(
-            reqwest::Certificate::from_pem(
-                read_pem(&cert)
-                    .whatever_context("Failed to read PEM")?
-                    .as_bytes(),
-            )
-            .whatever_context("Failed to parse PEM")?,
-        );
-    }
+    builder = builder.tls_certs_merge(
+        additional_root_certs
+            .into_iter()
+            .map(|content| {
+                reqwest::tls::Certificate::from_pem(
+                    read_pem(&content)
+                        .whatever_context("Failed to read PEM")?
+                        .as_bytes(),
+                )
+                .whatever_context("Failed to parse PEM")
+            })
+            .collect::<Result<Vec<_>, Whatever>>()?,
+    );
     // dns resolver dns overrides ?
     builder
         .build()

@@ -6,16 +6,16 @@ edition = "2021"
 [dependencies]
 axum = { version = "0.8", features = ["http2", "tokio"] }
 
-hudsucker = { version = "0.24", default-features = false, features = [
+hudsucker = { version = "0.25", default-features = false, features = [
     "http2",
     "rcgen-ca",
     "rustls-client",
 ] }
 
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.13", default-features = false, features = [
     "http2",
     "stream",
-    "rustls-tls-native-roots-no-provider",
+    "rustls",
 ] }
 
 rustls = { version = "0.23" }
@@ -24,11 +24,11 @@ rcgen = { version = "0.14", default-features = false }
 hyper = { version = "1" }
 
 tower = { version = "0.5" }
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.7", features = ["trace"] }
 
 http = "1"
 
-ruma = { version = "0.13", default-features = false, features = [
+ruma = { version = "0.16", default-features = false, features = [
     "federation-api",
 ] }
 
@@ -38,7 +38,7 @@ bytes = "1"
 tracing = "0.1"
 log = "0.4"
 env_logger = "0.11"
-snafu = "0.8"
+snafu = "0.9"
 ttl_cache = "0.5"
 clap = { version = "4", features = ["derive"] }
 
@@ -52,13 +52,13 @@ dns-lookup = "3"
 
 regex = "1"
 
-toml = "0.9"
+toml = "1"
 
 [dev-dependencies]
-axum-test = "18"
+axum-test = "21"
 httpmock = "0.8"
 tempfile = "3"
-rand = "0.9"
+rand = "0.10"
 # lazy_static = "1"
 # async_once = "0.2"
 
