@@ -1,55 +1,12 @@
 # Simple Border Gateway for Matrix federation
 
-## Overview
-
-**Simple Border Gateway** provides a controlled interface between a **private Matrix federation** and **external homeservers**.
-
-The gateway is designed for environments where homeservers are deployed in restricted networks but still need selective federation with trusted external domains. All federation communication passes through this service, ensuring that no direct connections occur between internal and external servers.
-
 The service exposes two distinct proxy endpoints:
 
 - **Inbound proxy**  
   Entry point for **external homeservers**. All federation requests coming from outside your private network must go through this endpoint.
 
 - **Outbound proxy**  
-  HTTP proxy used by **internal Synapse federation workers**. All outbound federation traffic is routed through this proxy so the gateway can validate, filter, or block requests before they leave the restricted network.
-
-## Requirements
-
-Before deploying the **Simple Border Gateway**, make sure that all **outgoing federation requests** are handled by a **dedicated worker**. This worker must be configured to use the gateway as an **HTTP & HTTPS proxy**, allowing the gateway to inspect, validate, or reject outbound federation traffic as needed.
-
-An example configuration inside the `homeserver.yaml` file of your Synapse instance:
-
-```yaml
-### Federation ###
-# This will disable federation sending on the main Synapse instance
-send_federation: false
-federation_sender_instances:
-  - federation-sender
-federation_receiver_instances:
-  - federation-receiver
-# Make sure outbound federation traffic only goes through a specified subset of workers
-outbound_federation_restricted_to:
-  - federation-sender
-worker_replication_secret: "your_secret"
-
-```
-
-An example of a worker configuration: 
-
-```yaml
-worker_app: synapse.app.federation_sender
-worker_name: federation-sender
-
-worker_listeners:
-  - type: http
-    port: 8034
-    resources:
-      - names: [federation]
-
-worker_log_config: /conf/workers/federation-sender.log.config
-
-```
+  HTTP forward proxy. All outbound federation traffic is routed through this proxy so the gateway can validate, filter, or block requests before they leave the restricted network.
 
 ## Deploy the service
 
@@ -82,8 +39,8 @@ Example configuration:
 If you simply want to **run the gateway manually** to verify that it starts correctly, you can build and launch it directly from the project folder using Docker:
 
 ```bash
-docker build . -t simple-border-gateway:0.0.1
-docker run -v ./data:/data simple-border-gateway:0.0.1 --config-file /data/config.toml
+docker build . -t simple-border-gateway:0.1.0
+docker run -v ./data:/data simple-border-gateway:0.1.0 --config-file /data/config.toml
 ```
 
 💡 You can also compile the binary directly using Cargo using `cargo run` if you prefer to run it outside Docker.
@@ -148,14 +105,9 @@ allowed_non_matrix_regexes_dangerous = [
 url = "https://127.0.0.1:3128"
 
 [[internal_homeservers]]
-server_name = "tenantA.tchap.io"
-federation_domain = "tenanta.tchap.io"
-target_base_url = "https://tenanta.tchap.io"
-
-[[internal_homeservers]]
-server_name = "tenantB.tchap.io"
-federation_domain = "tenantb.tchap.io"
-target_base_url = "https://tenantb.tchap.io"
+server_name = "servera.tchap.io"
+federation_domain = "inbound.servera.tchap.io"
+target_base_url = "https://servera.tchap.io"
 
 [[external_homeservers]]
 server_name = "matrix.org"
@@ -175,39 +127,80 @@ To ensure all **external homeservers** reach your federation **through the gatew
 
 If your homeserver is behind **Nginx**, you can add the following example configuration to return the gateway’s federation address:
 
-```toml
+```nginx
 location ~ ^/.well-known/matrix/server$ {
-    return 200 '{"m.server":"inbound.tchap.io:443"}';
+    return 200 '{"m.server":"inbound.servera.tchap.io:443"}';
 }
 ```
 
-This tells remote homeservers to send all federation traffic to the gateway URL, which corresponds to the inbound side of your gateway.
-
-### Outbound
-
-Depending on your setup, you can redirect federation traffic from your **federation worker only** to the gateway. For example, when using **Docker Compose**, you can configure a proxy to force outbound federation requests through the gateway:
-
-```yaml
-    container_name: federation-sender-tenantB
-    environment:
-      HTTP_PROXY: "http://gateway.proxy:3128"
-      HTTPS_PROXY: "https://outbound.gateway.tchap.io:4443"
-      NO_PROXY: "localhost,127.0.0.1,db,redis,.tchap.io"
-```
-
-You can also set up the proxy configuration inside the worker configuration file: 
-
-```yaml
-http_proxy: http://USERNAME:PASSWORD@10.0.1.1:8080/
-https_proxy: http://USERNAME:PASSWORD@proxy.example.com:8080/
-no_proxy_hosts:
-  - master.hostname.example.com
-  - 10.1.0.0/16
-  - 172.30.0.0/16
-```
-
-You can find more information on how to setup the proxy [here](http://element-hq.github.io/synapse/latest/setup/forward_proxy.html).
+This tells remote homeservers to send all federation traffic to the gateway URL, which corresponds to the inbound side of your gateway. 
 
 💡 Synapse homeservers use HTTPS for inter-server communications, even within the same network. It’s strongly recommended to expose your gateway under a valid TLS-enabled domain name.
 
-💡 The gateway is **only designed to act as a border with external servers**. Internal homeservers within the same private federation **must bypass the proxy entirely**, as internal-to-internal federation will **not function** through the gateway.
+### Outbound
+
+In order to use the gateway with your installation, you need to configure Synapse to use it as an HTTPS proxy for outgoing federation traffic.
+
+You have multiple ways of proceeding:
+
+- Setting it up on all workers, or on the single Synapse instance in a monolithic deployment.
+- Setting it up only on dedicated workers, such as the `Federation senders`, if you have one configured.
+
+Regardless of the approach, the HTTPS proxy must point to the outbound endpoint of your deployed gateway. Example configuration in the homeserver configuration of Synapse:
+
+```yaml
+  http_proxy: http://bordergateway:3128
+  # Synapse will mainly use HTTPS
+  https_proxy: https://bordergateway:3128
+  no_proxy_hosts:
+    - localhost
+    - 127.0.0.1
+    - db
+    - redis
+    ...
+```
+
+You can also find more information on how to setup the proxy [here](http://element-hq.github.io/synapse/latest/setup/forward_proxy.html). There are several ways to set it up, either from the Synapse configuration, or your deployment stack using environment variables, such as `HTTP_PROXY` and `HTTPS_PROXY`.
+
+Alternatively, if you are interested in setting up workers for your Synapse installation, you can do it [here](https://element-hq.github.io/synapse/latest/workers.html)
+
+## Annex 
+
+This section provides a few implementation tips and ideas that may be useful when deploying or integrating the gateway.
+
+### Inbound configuration - Host/Destination
+
+Depending on your configuration, you may need to override the `Host` header in your reverse proxy based on what is present in the incoming request, especially the `destination` value provided in the Matrix `Authorization` header.
+
+Some requests may not include the `destination` value or a proper `Host` header, which may cause issues in the gateway.
+
+In this example, we read the `destination` value and provide a default value, the server URL, if it is missing:
+
+```nginx
+  # parse destination header if available
+  map $http_authorization $matrix_destination { ~*destination="([^"]+)" $1; default ""; }
+
+  map $matrix_destination $gw_host {
+      default servera.tchap.io;   # fallback if not a Matrix federation request
+      ~.+ $matrix_destination;  # use destination when available
+  }
+
+  ...
+  server {
+    listen 443 ssl proxy_protocol;
+    server_name inbound.servera.tchap.io;
+
+    ...
+
+    ssl_certificate ...;
+    ssl_certificate_key ...;
+
+    proxy_set_header Host $gw_host; # Resolving host
+
+    location / {
+        proxy_pass http://bordergateway:8000;
+    }
+}
+```
+
+This will always ensure the Host header is available for the gateway to handle the request.
