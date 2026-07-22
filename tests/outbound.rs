@@ -1,5 +1,5 @@
 use http::{Method, Request, Response, StatusCode};
-use rand::Rng;
+use rand::RngExt;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 use reqwest::{Body, Proxy};
 use simple_border_gateway::http_gateway::outbound::OutboundGatewayBuilder;
