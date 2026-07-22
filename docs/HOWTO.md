@@ -171,7 +171,7 @@ verify_keys = { "ed25519:a_RXGa" = "l8Hft5qXKn1vfHrg3p4+W8gELQVo8N13JkluMfmn2sQ"
 
 Depending on the mode (**outbound** or **inbound**), the way you expose the Simple Border Gateway differs.
 
-### Outbound
+### Inbound
 
 To ensure all **external homeservers** reach your federation **through the gateway**, expose the gateway’s public endpoint via `/.well-known/matrix/server`.
 
