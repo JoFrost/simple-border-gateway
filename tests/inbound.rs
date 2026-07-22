@@ -57,8 +57,7 @@ async fn setup_mock_gateway(
 
     install_crypto_provider();
 
-    let keypair =
-        Ed25519KeyPair::from_der(&Ed25519KeyPair::generate(), "test".to_owned()).unwrap();
+    let keypair = Ed25519KeyPair::from_der(&Ed25519KeyPair::generate(), "test".to_owned()).unwrap();
 
     let public_key = keypair.public_key().to_vec();
     let key_id = format!("ed25519:{}", keypair.version());
