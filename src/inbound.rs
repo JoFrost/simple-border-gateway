@@ -9,13 +9,12 @@ use crate::{
         util::{create_matrix_response, NameResolver},
         xmatrix::verify_signature,
     },
-    util::{get_matching_endpoint, to_bytes, CompiledRuleset, RequestContext},
+    util::{get_matching_endpoint, resolve_endpoint, to_bytes, CompiledRuleset, RequestContext},
 };
 use http::{Request, StatusCode};
 use log::Level;
 use reqwest::Body;
 use ruma::{api::federation::authentication::XMatrix, serde::Base64};
-use tracing::debug;
 
 #[derive(Clone)]
 pub struct InboundHandler {
@@ -71,51 +70,21 @@ impl GatewayHandler for InboundHandler {
             }
         }
 
-        // Use override rules if server has a configured ruleset, otherwise fall through to the default ruleset.
-        let ruleset = self.server_rulesets.get(&ctx.origin_server_name);
-        let additional = ruleset
-            .map(|r| r.additional_endpoints.as_slice())
-            .unwrap_or(&[]);
-
-        debug!(
-            "Ruleset lookup (inbound) for server '{}': found ruleset: {}, additional endpoints: {}",
-            ctx.origin_server_name,
-            ruleset.is_some(),
-            additional.len()
-        );
-
-        // Two-tier lookup: additional endpoints take precedence, then fall back to the default ruleset.
-        let (endpoint, is_from_additional) =
-            if let Some(ep) = get_matching_endpoint(&ctx.parts, additional) {
-                (ep, true)
-            } else if let Some(ep) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
-                (ep, false)
-            } else {
-                ctx.log(Level::Warn, "404 - not found, unknown endpoint");
-                return create_status_response(StatusCode::NOT_FOUND).into();
-            };
-
-        // Determine effective actions: check the override rules by their endpoint ID, otherwise use the endpoint's defaults.
-        let has_override = ruleset
-            .and_then(|r| r.action_overrides.get(&endpoint.id))
-            .is_some();
-        let (inbound_action, _) =
-            if let Some(&actions) = ruleset.and_then(|r| r.action_overrides.get(&endpoint.id)) {
-                actions
-            } else {
-                (endpoint.rule.inbound_action, endpoint.rule.outbound_action)
-            };
-
-        let is_override = has_override || is_from_additional;
-
-        debug!(
-            "Matched endpoint: {}, is_from_additional: {}, has_override: {}, inbound_action: {:?}",
-            endpoint.id, is_from_additional, has_override, inbound_action
-        );
+        // Call the main helper to resolve the endpoint with the active/applicable ruleset (with the default one for fallback), if it exist.
+        // This will return on purpose the inbound and outbound action, but we are of course only interested in the inbound action here...
+        let Some(resolved_endpoint) = resolve_endpoint(
+            &ctx.parts,
+            &ctx.origin_server_name,
+            &self.server_rulesets,
+            DEFAULT_RULESET.as_slice(),
+        ) else {
+            ctx.log(Level::Warn, "404 - not found, unknown endpoint");
+            return create_status_response(StatusCode::NOT_FOUND).into();
+        };
 
         // When reject all by default is set, we reject non well known endpoint matches
         // unless an override rule explicitly allowed them.
-        if self.reject_all_by_default && !is_override {
+        if self.reject_all_by_default && !resolved_endpoint.is_override {
             ctx.log(
                 Level::Warn,
                 "403 - forbidden, endpoint rejected by ruleset due to policy",
@@ -124,16 +93,19 @@ impl GatewayHandler for InboundHandler {
         }
 
         // Verifying the auth type, and if a specific endpoint is authorized or not.
-        match endpoint.rule.auth_type {
+        match resolved_endpoint.endpoint.rule.auth_type {
             AuthType::Unauthenticated => {
-                if inbound_action == Action::Reject {
+                if resolved_endpoint.inbound_action == Action::Reject {
                     ctx.log(Level::Warn, "403 - forbidden, endpoint rejected by ruleset");
                     return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
                 }
                 ctx.log(Level::Info, "forward, unauthenticated endpoint");
                 Request::from_parts(ctx.parts, body).into()
             }
-            AuthType::CheckSignature => self.check_signature(ctx, body, inbound_action).await,
+            AuthType::CheckSignature => {
+                self.check_signature(ctx, body, resolved_endpoint.inbound_action)
+                    .await
+            }
         }
     }
 }

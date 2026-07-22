@@ -8,6 +8,7 @@ use log::{log, Level};
 use regex::Regex;
 use reqwest::Body;
 use snafu::{ResultExt as _, Whatever};
+use tracing::debug;
 
 use crate::{
     config::EndpointConfig,
@@ -52,7 +53,7 @@ pub struct RegexEndpoint {
 }
 
 impl RegexEndpoint {
-    /// Build a RegexEndpoint directly from typed values (used by the default ruleset).
+    /// Build a new endpoint with the specified arguments.
     pub fn new(
         id: &str,
         path: &str,
@@ -74,6 +75,28 @@ impl RegexEndpoint {
             },
         })
     }
+
+    /// Build a new allowed (inbound and outbound) endpoint with the specified arguments.
+    /// Mainly added to avoid allowing by hand all default actions
+    pub fn new_allowed(
+        id: &str,
+        path: &str,
+        method: Option<Method>,
+        auth_type: AuthType,
+        endpoint_type: EndpointType,
+    ) -> Result<Self, regex::Error> {
+        Ok(Self {
+            id: id.to_string(),
+            regex: path_to_regex(path)?,
+            rule: RuntimeRule {
+                method,
+                endpoint_type,
+                auth_type,
+                inbound_action: Action::Allow,
+                outbound_action: Action::Allow,
+            },
+        })
+    }
 }
 
 /// A compiled ruleset combining additional endpoint definitions with action overrides.
@@ -81,6 +104,16 @@ impl RegexEndpoint {
 pub struct CompiledRuleset {
     pub additional_endpoints: Vec<RegexEndpoint>,
     pub action_overrides: BTreeMap<String, (Action, Action)>,
+}
+
+/// Result of endpoint resolution.
+/// Contains the matched endpoint and the action to take for inbound and outbound requests.
+/// Will also return if this endpoint is an override of a default endpoint in the ruleset.
+pub(crate) struct ResolvedEndpoint<'a> {
+    pub(crate) endpoint: &'a RegexEndpoint,
+    pub(crate) inbound_action: Action,
+    pub(crate) outbound_action: Action,
+    pub(crate) is_override: bool,
 }
 
 #[allow(clippy::unwrap_used, reason = "lazy static regex")]
@@ -194,6 +227,61 @@ pub(crate) fn get_matching_endpoint<'a>(
         }
     }
     None
+}
+
+/// Resolve an endpoint for a server and apply its action overrides.
+pub(crate) fn resolve_endpoint<'a>(
+    parts: &Parts,
+    server_name: &str,
+    server_rulesets: &'a BTreeMap<String, CompiledRuleset>,
+    default_ruleset: &'a [RegexEndpoint],
+) -> Option<ResolvedEndpoint<'a>> {
+    // Use override rules if the server has a configured ruleset, otherwise fall through to the
+    // default ruleset
+    let ruleset = server_rulesets.get(server_name);
+    let additional_endpoints = ruleset
+        .map(|ruleset| ruleset.additional_endpoints.as_slice())
+        .unwrap_or_default();
+
+    debug!(
+        "Ruleset lookup for server '{server_name}': found ruleset: {}, additional endpoints: {}",
+        ruleset.is_some(),
+        additional_endpoints.len()
+    );
+
+    // Two-tier lookup, additional endpoints take precedence, then fall back to the default
+    // ruleset
+    let (endpoint, is_from_additional) =
+        if let Some(endpoint) = get_matching_endpoint(parts, additional_endpoints) {
+            (endpoint, true)
+        } else {
+            (get_matching_endpoint(parts, default_ruleset)?, false)
+        };
+
+    // Determine effective actions: check the override rules by endpoint ID, otherwise use the
+    // endpoint's defaults
+    let action_override = ruleset
+        .and_then(|ruleset| ruleset.action_overrides.get(&endpoint.id))
+        .copied();
+    let (inbound_action, outbound_action) =
+        action_override.unwrap_or((endpoint.rule.inbound_action, endpoint.rule.outbound_action));
+    // Is this an override? This is useful to know for logging, but also if we are in reject all mode, 
+    // as all non overriden endpoints will be rejected
+    // An additional endpoint is automatically considered as a override...
+    let is_override = is_from_additional || action_override.is_some();
+
+    debug!(
+        "Matched endpoint: {}, is_from_additional: {is_from_additional}, has_override: {}, inbound_action: {inbound_action:?}, outbound_action: {outbound_action:?}",
+        endpoint.id,
+        action_override.is_some()
+    );
+
+    Some(ResolvedEndpoint {
+        endpoint,
+        inbound_action,
+        outbound_action,
+        is_override,
+    })
 }
 
 pub(crate) async fn to_bytes(body: Body, limit: usize) -> Option<Bytes> {

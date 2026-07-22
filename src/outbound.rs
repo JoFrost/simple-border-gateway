@@ -8,7 +8,6 @@ use log::Level;
 use regex::Regex;
 use reqwest::Body;
 use snafu::{ResultExt, Whatever};
-use tracing::debug;
 
 use crate::{
     http_gateway::{
@@ -18,7 +17,7 @@ use crate::{
         spec::{Action, EndpointType, DEFAULT_RULESET},
         util::{create_matrix_response, NameResolver},
     },
-    util::{get_matching_endpoint, remove_default_ports_from_uri, CompiledRuleset, RequestContext},
+    util::{remove_default_ports_from_uri, resolve_endpoint, CompiledRuleset, RequestContext},
 };
 
 #[derive(Clone)]
@@ -53,51 +52,21 @@ impl GatewayHandler for OutboundHandler {
             }
         }
 
-        // Use override rules if server has a configured ruleset, otherwise fall through to the default ruleset.
-        let ruleset = self.server_rulesets.get(&ctx.destination_server_name);
-        let additional = ruleset
-            .map(|r| r.additional_endpoints.as_slice())
-            .unwrap_or(&[]);
-
-        debug!(
-            "Ruleset lookup (outbound) for server '{}': found ruleset: {}, additional endpoints: {}",
-            ctx.destination_server_name,
-            ruleset.is_some(),
-            additional.len()
-        );
-
-        // Two-tier lookup: additional endpoints take precedence, then fall back to the default ruleset.
-        let (endpoint, is_from_additional) =
-            if let Some(ep) = get_matching_endpoint(&ctx.parts, additional) {
-                (ep, true)
-            } else if let Some(ep) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
-                (ep, false)
-            } else {
-                ctx.log(Level::Warn, "404 - not found, unknown endpoint");
-                return create_status_response(StatusCode::NOT_FOUND).into();
-            };
-
-        // Determine effective actions: check override_rules by endpoint ID, otherwise use the endpoint's defaults.
-        let has_override = ruleset
-            .and_then(|r| r.action_overrides.get(&endpoint.id))
-            .is_some();
-        let (_, outbound_action) =
-            if let Some(&actions) = ruleset.and_then(|r| r.action_overrides.get(&endpoint.id)) {
-                actions
-            } else {
-                (endpoint.rule.inbound_action, endpoint.rule.outbound_action)
-            };
-
-        let is_override = has_override || is_from_additional;
-
-        debug!(
-            "Matched endpoint: {}, is_from_additional: {}, has_override: {}, outbound_action: {:?}",
-            endpoint.id, is_from_additional, has_override, outbound_action
-        );
+        // Call the main helper to resolve the endpoint with the active/applicable ruleset (with the default one for fallback), if it exist.
+        // This will return on purpose the inbound and outbound action, but we are of course only interested in the outbound action here...
+        let Some(resolved_endpoint) = resolve_endpoint(
+            &ctx.parts,
+            &ctx.destination_server_name,
+            &self.server_rulesets,
+            DEFAULT_RULESET.as_slice(),
+        ) else {
+            ctx.log(Level::Warn, "404 - not found, unknown endpoint");
+            return create_status_response(StatusCode::NOT_FOUND).into();
+        };
 
         // When the reject all mode is enabled, we reject EVERYTHING not overridden.
         // No exceptions are made here, unlike the inbound mode.
-        if !is_override && self.reject_all_by_default {
+        if !resolved_endpoint.is_override && self.reject_all_by_default {
             ctx.log(
                 Level::Warn,
                 "403 - forbidden, endpoint rejected by default ruleset due to policy",
@@ -105,12 +74,12 @@ impl GatewayHandler for OutboundHandler {
             return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
         }
 
-        if outbound_action == Action::Reject {
+        if resolved_endpoint.outbound_action == Action::Reject {
             ctx.log(Level::Warn, "403 - forbidden, endpoint rejected by ruleset");
             return create_matrix_response(StatusCode::FORBIDDEN, "M_FORBIDDEN").into();
         }
 
-        match endpoint.rule.endpoint_type {
+        match resolved_endpoint.endpoint.rule.endpoint_type {
             EndpointType::Federation => {
                 if !self
                     .allowed_federation_domains
