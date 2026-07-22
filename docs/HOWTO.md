@@ -88,7 +88,7 @@ docker build . -t simple-border-gateway:0.0.1
 docker run -v ./data:/data simple-border-gateway:0.0.1 --config-file /data/config.toml
 ```
 
-💡 You can also compile the binary directly using Cargo using `cargo run` if you prefer to run it outside Docker. If you choose this approach, note that the project was developed and tested against **Rust Stable 1.90.0**. It’s **recommended** to use the same version to avoid potential build or compatibility issues.
+💡 You can also compile the binary directly using Cargo using `cargo run` if you prefer to run it outside Docker.
 
 ## Configure the service
 
