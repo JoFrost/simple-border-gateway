@@ -4,8 +4,6 @@
 
 **Simple Border Gateway** provides a controlled interface between a **private Matrix federation** and **external homeservers**.
 
-It inspects and validates all federation traffic, enforcing **certificate pinning**, **domain allow-listing**, and **schema verification** on both inbound and outbound requests.
-
 The gateway is designed for environments where homeservers are deployed in restricted networks but still need selective federation with trusted external domains. All federation communication passes through this service, ensuring that no direct connections occur between internal and external servers.
 
 The service exposes two distinct proxy endpoints:
