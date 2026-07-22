@@ -3,7 +3,7 @@
 The service exposes two distinct proxy endpoints:
 
 - **Inbound proxy**  
-  Entry point for **external homeservers**. All federation requests coming from outside your private network must go through this endpoint.
+  Entry point for **external homeservers**. All federation requests coming from outside your private network will go through this endpoint.
 
 - **Outbound proxy**  
   HTTP forward proxy. All outbound federation traffic is routed through this proxy so the gateway can validate, filter, or block requests before they leave the restricted network.
@@ -43,7 +43,7 @@ docker build . -t simple-border-gateway:0.1.0
 docker run -v ./data:/data simple-border-gateway:0.1.0 --config-file /data/config.toml
 ```
 
-💡 You can also compile the binary directly using Cargo using `cargo run` if you prefer to run it outside Docker.
+**You can also compile the binary directly using Cargo using `cargo run` if you prefer to run it outside Docker.**
 
 ## Configure the service
 
@@ -58,9 +58,7 @@ Below is a breakdown of the main sections:
 - `listen_address`: the address where internal workers connect to send outbound federation traffic.
 - `ca_priv_key` / `ca_cert`:  PEM-encoded private key and certificate for the local Certificate Authority (CA).
     
-    These are used by the outbound proxy to dynamically sign short-lived certificates for target domains, allowing inspection and policy enforcement on encrypted HTTPS traffic.
-    
-    💡 CA certificates protected with a password are not currently supported.
+    These are used by the outbound proxy to dynamically sign short-lived certificates for target domains, allowing inspection and policy enforcement on encrypted HTTPS traffic. **CA certificates protected with a password are not currently supported**.
     
 - `additional_root_certs`: optional list of extra CA certificates trusted by the gateway. It can either be a path or the certificate, directly.
 - `allowed_non_matrix_regexes_dangerous`: optional patterns allowing specific non-Matrix endpoints, besides the federations traffic.
@@ -72,17 +70,14 @@ Below is a breakdown of the main sections:
     - `server_name`: Matrix server name used in federation headers.
     - `federation_domain`: public-facing domain for federation.
     - `target_base_url`: internal base URL where the gateway forwards traffic for that homeserver.
-    
-    💡 You don’t need to specify verify keys here, the gateway does not validate keys for internal homeservers.
-    
-
+  
 **`[[external_homeservers]]`:** Lists explicitly trusted external homeservers.
 
 - `server_name`: expected Matrix server name.
 - `federation_domain` / `client_domain`: domains used for federation and client APIs.
 - `verify_keys`: mapping of trusted signing keys used to validate incoming requests.
 
-💡 You need to specify the federation domains in the configuration as the gateway, in its version 0.1.0, does not rely on the `/.well-known/matrix/server` endpoint. 
+**You need to specify the federation domains in the configuration as the gateway, in its version 0.1.0, does not rely on the `/.well-known/matrix/server` endpoint.**
 
 Here is an example of a working configuration: 
 
@@ -135,7 +130,7 @@ location ~ ^/.well-known/matrix/server$ {
 
 This tells remote homeservers to send all federation traffic to the gateway URL, which corresponds to the inbound side of your gateway. 
 
-💡 Synapse homeservers use HTTPS for inter-server communications, even within the same network. It’s strongly recommended to expose your gateway under a valid TLS-enabled domain name.
+**Synapse homeservers use HTTPS for inter-server communications, even within the same network. It’s strongly recommended to expose your gateway under a valid TLS-enabled domain name.**
 
 ### Outbound
 
