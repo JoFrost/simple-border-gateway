@@ -183,7 +183,7 @@ location ~ ^/.well-known/matrix/server$ {
 
 This tells remote homeservers to send all federation traffic to the gateway URL, which corresponds to the inbound side of your gateway.
 
-### Inbound
+### Outbound
 
 Depending on your setup, you can redirect federation traffic from your **federation worker only** to the gateway. For example, when using **Docker Compose**, you can configure a proxy to force outbound federation requests through the gateway:
 
