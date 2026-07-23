@@ -265,7 +265,7 @@ pub(crate) fn resolve_endpoint<'a>(
         .copied();
     let (inbound_action, outbound_action) =
         action_override.unwrap_or((endpoint.rule.inbound_action, endpoint.rule.outbound_action));
-    // Is this an override? This is useful to know for logging, but also if we are in reject all mode, 
+    // Is this an override? This is useful to know for logging, but also if we are in reject all mode,
     // as all non overriden endpoints will be rejected
     // An additional endpoint is automatically considered as a override...
     let is_override = is_from_additional || action_override.is_some();
