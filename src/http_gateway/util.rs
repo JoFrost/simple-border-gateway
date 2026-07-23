@@ -26,8 +26,8 @@ pub(crate) fn create_status_response<B: From<String>>(status: StatusCode) -> htt
     create_response(status, None).unwrap()
 }
 
-pub(crate) fn extract_destination_host<'a>(
-    parts: &'a http::request::Parts,
+pub(crate) fn extract_destination_host(
+    parts: &http::request::Parts,
     direction: &GatewayDirection,
 ) -> String {
     let mut host = parts
