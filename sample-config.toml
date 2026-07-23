@@ -9,8 +9,8 @@ additional_root_certs = [
 [outbound_proxy]
 #listen_adress = "0.0.0.0:3128"
 
-ca_priv_key_path = "ca.pem"
-ca_cert_path = "ca.crt"
+ca_priv_key = "ca.pem"
+ca_cert = "ca.crt"
 
 additional_root_certs = [
     "----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
