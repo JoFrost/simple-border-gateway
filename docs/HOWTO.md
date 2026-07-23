@@ -146,7 +146,7 @@ Regardless of the approach, the HTTPS proxy must point to the outbound endpoint 
 ```yaml
   http_proxy: http://bordergateway:3128
   # Synapse will mainly use HTTPS
-  https_proxy: https://bordergateway:3128
+  https_proxy: http://bordergateway:3128
   no_proxy_hosts:
     - localhost
     - 127.0.0.1
