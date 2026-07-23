@@ -29,7 +29,7 @@ pub(crate) fn create_status_response<B: From<String>>(status: StatusCode) -> htt
 pub(crate) fn extract_destination_host<'a>(
     parts: &'a http::request::Parts,
     direction: &GatewayDirection,
-) -> &'a str {
+) -> String {
     let mut host = parts
         .uri
         .authority()
@@ -42,7 +42,7 @@ pub(crate) fn extract_destination_host<'a>(
             host = host_header.to_str().unwrap_or_default();
         }
     }
-    remove_default_https_port(host)
+    remove_default_https_port(host).to_lowercase()
 }
 
 pub(crate) fn extract_origin_ip(
