@@ -39,8 +39,8 @@ Example configuration:
 If you simply want to **run the gateway manually** to verify that it starts correctly, you can build and launch it directly from the project folder using Docker:
 
 ```bash
-docker build . -t simple-border-gateway:0.1.0
-docker run -v ./data:/data simple-border-gateway:0.1.0 --config-file /data/config.toml
+docker build . -t simple-border-gateway:latest
+docker run -v ./data:/data simple-border-gateway:latest --config-file /data/config.toml
 ```
 
 **You can also compile the binary directly using Cargo using `cargo run` if you prefer to run it outside Docker.**
