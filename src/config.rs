@@ -1,20 +1,36 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+// Lowercase at import time the requested string.
+// This will enforce domains to be lowercase...
+fn deserialize_lowercase<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(value.to_lowercase())
+}
 
 #[derive(Deserialize, Serialize)]
 pub struct InternalHomeserverConfig {
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub server_name: String,
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub federation_domain: String,
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub target_base_url: String,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct ExternalHomeserverConfig {
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub server_name: String,
     // Should domains be fetched dynamically from well-known files?
     // A bit less secure, but more convenient?
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub federation_domain: String,
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub client_domain: String,
     pub verify_keys: BTreeMap<String, String>,
 }

@@ -50,6 +50,10 @@ async fn start_services(
     let mut target_base_urls: BTreeMap<String, String> = BTreeMap::new();
 
     for hs in config.internal_homeservers {
+        debug!(
+            "Internal homeserver {} with federation domain {} and target base url {}",
+            hs.server_name, hs.federation_domain, hs.target_base_url
+        );
         domain_server_name_map.insert(hs.federation_domain.clone(), hs.server_name.clone());
         target_base_urls.insert(hs.federation_domain, hs.target_base_url.clone());
         // This is useful for well known endpoints
@@ -61,6 +65,10 @@ async fn start_services(
     let mut public_key_map: PublicKeyMap = BTreeMap::new();
 
     for hs in config.external_homeservers {
+        debug!(
+            "External homeserver {} with federation domain {} and client domain {}",
+            hs.server_name, hs.federation_domain, hs.client_domain
+        );
         domain_server_name_map.insert(hs.federation_domain.clone(), hs.server_name.clone());
         allowed_federation_domains.insert(hs.federation_domain, hs.server_name.clone());
         domain_server_name_map.insert(hs.client_domain.clone(), hs.server_name.clone());
