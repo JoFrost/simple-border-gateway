@@ -1,4 +1,5 @@
 use http::{Method, StatusCode};
+use http::StatusCode;
 use rand::RngExt;
 use reqwest::Body;
 use ruma::serde::Base64;

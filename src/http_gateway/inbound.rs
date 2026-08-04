@@ -136,7 +136,7 @@ async fn forward_request<H: GatewayHandler>(
     let (parts, body) = req.into_parts();
     let dest_host = extract_destination_host(&parts, &GatewayDirection::Inbound);
 
-    let Some(target_base_url) = state.target_base_urls.get(dest_host) else {
+    let Some(target_base_url) = state.target_base_urls.get(&dest_host) else {
         return state
             .handler
             .handle_error(
