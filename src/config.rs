@@ -20,7 +20,7 @@ where
 {
     let value = String::deserialize(deserializer)?;
     let url = Url::parse(&value).map_err(de::Error::custom)?;
-    Ok(url.to_string())
+    Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
 #[derive(Deserialize, Serialize)]

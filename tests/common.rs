@@ -19,7 +19,7 @@ fn test_base_url_deserialization() {
         [[internal_homeservers]]
         server_name = "Tout.IM"
         federation_domain = "Matrix.TOUT.im"
-        target_base_url = "http://LOCALHOST:8008/chat/Test"
+        target_base_url = "http://LOCALHOST:8008/chat/Test/"
         
         [[external_homeservers]]
         server_name = "Matrix.org"
@@ -29,7 +29,7 @@ fn test_base_url_deserialization() {
     "#;
 
     let config: BorderGatewayConfig = toml::from_str(config_toml).unwrap();
-    // The base url is lowercased, but the path should be preserved as-is...
+    // The base url is lowercased, but the path should be preserved as-is, minus the final slash...
     assert_eq!(
         config.internal_homeservers[0].target_base_url,
         "http://localhost:8008/chat/Test"
