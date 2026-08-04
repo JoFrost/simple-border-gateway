@@ -8,8 +8,8 @@ fn deserialize_lowercase<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let value = String::deserialize(deserializer)?;
-    Ok(value.to_lowercase())
+    let value: String = String::deserialize(deserializer)?;
+    Ok(value.to_ascii_lowercase())
 }
 
 #[derive(Deserialize, Serialize)]
