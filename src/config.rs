@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
+use url::Url;
 
 // Lowercase at import time the requested string.
 // This will enforce domains to be lowercase...
@@ -12,13 +13,23 @@ where
     Ok(value.to_ascii_lowercase())
 }
 
+// Special deserializer for base URLs, which will ensure that the URL is valid and normalized
+fn deserialize_base_url<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    let url = Url::parse(&value).map_err(de::Error::custom)?;
+    Ok(url.to_string())
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct InternalHomeserverConfig {
     #[serde(deserialize_with = "deserialize_lowercase")]
     pub server_name: String,
     #[serde(deserialize_with = "deserialize_lowercase")]
     pub federation_domain: String,
-    #[serde(deserialize_with = "deserialize_lowercase")]
+    #[serde(deserialize_with = "deserialize_base_url")]
     pub target_base_url: String,
 }
 

@@ -2831,6 +2831,7 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "ttl_cache",
+ "url",
 ]
 
 [[package]]
