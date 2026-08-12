@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
+use snafu::{ResultExt, Whatever};
 use url::Url;
 
 // Lowercase at import time the requested string.
