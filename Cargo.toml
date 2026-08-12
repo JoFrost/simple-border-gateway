@@ -56,6 +56,8 @@ regex = "1"
 
 toml = "1"
 
+url = "2"
+
 [dev-dependencies]
 axum-test = "21"
 httpmock = "0.8"

@@ -1,22 +1,48 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
-use snafu::{ResultExt, Whatever};
+use serde::{de, Deserialize, Deserializer, Serialize};
+use url::Url;
+
+// Lowercase at import time the requested string.
+// This will enforce domains to be lowercase...
+fn deserialize_lowercase<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: String = String::deserialize(deserializer)?;
+    Ok(value.to_ascii_lowercase())
+}
+
+// Special deserializer for base URLs, which will ensure that the URL is valid and normalized
+fn deserialize_base_url<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    let url = Url::parse(&value).map_err(de::Error::custom)?;
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
 
 #[derive(Deserialize, Serialize)]
 pub struct InternalHomeserverConfig {
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub server_name: String,
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub federation_domain: String,
+    #[serde(deserialize_with = "deserialize_base_url")]
     pub target_base_url: String,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct ExternalHomeserverConfig {
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub server_name: String,
     // Should domains be fetched dynamically from well-known files?
     // A bit less secure, but more convenient?
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub federation_domain: String,
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub client_domain: String,
     pub verify_keys: BTreeMap<String, String>,
     /// Name of the ruleset to apply for this homeserver.
