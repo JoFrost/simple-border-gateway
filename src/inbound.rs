@@ -14,7 +14,7 @@ use crate::{
 use http::{Request, StatusCode};
 use log::Level;
 use reqwest::Body;
-use ruma::{api::federation::authentication::XMatrix, serde::Base64};
+use ruma::serde::Base64;
 
 #[derive(Clone)]
 pub struct InboundHandler {
@@ -46,27 +46,6 @@ impl GatewayHandler for InboundHandler {
             {
                 ctx.log(Level::Info, "forward, well-known endpoint");
                 return Request::from_parts(ctx.parts, body).into();
-            }
-        }
-
-        // If rdns failed (returns IP address or localhost), or we don't recognize the server, try to extract the origin from Authorization header.
-        // Checking the Authorization header also address an edge case where rdns returns a pod address, which may prevent the ruleset from being applied if the pod address is not included in the ruleset configuration.
-        // By extracting the origin server name from the Authorization header, we can still apply the correct ruleset based on the actual server name, even if rdns fails to resolve it properly.
-        // Localhost here is treated as a failure case, as we are supposed to get something else than localhost in normal cases...
-        if ctx.origin_server_name.parse::<std::net::IpAddr>().is_ok()
-            || ctx.origin_server_name == "localhost"
-            || !self
-                .server_rulesets
-                .contains_key(ctx.origin_server_name.as_str())
-        {
-            if let Some(auth_header) = ctx.parts.headers.get("Authorization") {
-                if let Ok(auth_str) = auth_header.to_str() {
-                    // If this happens, we effectively do that twice, as
-                    // check_signature will also parse the Authorization header. But this is only a fallback for when rdns fails, so it shouldn't be a common case...
-                    if let Ok(x_matrix) = XMatrix::parse(auth_str) {
-                        ctx.origin_server_name = x_matrix.origin.to_string();
-                    }
-                }
             }
         }
 
@@ -127,25 +106,17 @@ impl InboundHandler {
 
     async fn check_signature(
         &self,
-        mut ctx: RequestContext,
+        ctx: RequestContext,
         body: Body,
         inbound_action: Action,
     ) -> RequestOrResponse {
-        let Some(auth_header) = ctx.parts.headers.get("Authorization") else {
-            ctx.log(Level::Warn, "401 - unauthorized, no authorization header");
-            return create_matrix_response(StatusCode::UNAUTHORIZED, "M_UNAUTHORIZED").into();
-        };
-
-        let Ok(x_matrix) = XMatrix::parse(auth_header.to_str().unwrap_or_default()) else {
+        let Some(x_matrix) = &ctx.xmatrix else {
             ctx.log(
                 Level::Warn,
-                "401 - unauthorized, invalid X-Matrix auth header",
+                "401 - unauthorized, unavailable or invalid X-Matrix auth header",
             );
             return create_matrix_response(StatusCode::UNAUTHORIZED, "M_UNAUTHORIZED").into();
         };
-
-        // let's override the origin with the server name from the X-Matrix header
-        ctx.origin_server_name = x_matrix.origin.clone().to_string();
 
         if !self
             .public_key_map
