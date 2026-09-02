@@ -98,6 +98,21 @@ impl RegexEndpoint {
             },
         })
     }
+
+    /// Build an allowed endpoint using signed federation defaults.
+    pub fn new_allowed_signed_fed(
+        id: &str,
+        path: &str,
+        method: Option<Method>,
+    ) -> Result<Self, regex::Error> {
+        Self::new_allowed(
+            id,
+            path,
+            method,
+            AuthType::CheckSignature,
+            EndpointType::Federation,
+        )
+    }
 }
 
 /// A compiled ruleset combining additional endpoint definitions with action overrides.
@@ -144,23 +159,6 @@ pub fn build_regex_endpoints_from_endpoint_configs(
                 })
                 .transpose()?;
 
-            let auth_type = match e.auth_type.as_deref() {
-                None | Some("CheckSignature") => AuthType::CheckSignature,
-                Some("Unauthenticated") => AuthType::Unauthenticated,
-                Some(other) => {
-                    snafu::whatever!("Unknown auth_type '{}' in endpoint '{}'", other, e.id)
-                }
-            };
-
-            let endpoint_type = match e.endpoint_type.as_deref() {
-                None | Some("Federation") => EndpointType::Federation,
-                Some("WellKnown") => EndpointType::WellKnown,
-                Some("LegacyMedia") => EndpointType::LegacyMedia,
-                Some(other) => {
-                    snafu::whatever!("Unknown endpoint_type '{}' in endpoint '{}'", other, e.id)
-                }
-            };
-
             let regex = path_to_regex(&e.path).whatever_context(format!(
                 "Invalid path pattern '{}' in endpoint '{}'",
                 e.path, e.id
@@ -171,8 +169,8 @@ pub fn build_regex_endpoints_from_endpoint_configs(
                 regex,
                 rule: RuntimeRule {
                     method,
-                    endpoint_type,
-                    auth_type,
+                    endpoint_type: e.endpoint_type,
+                    auth_type: e.auth_type,
                     inbound_action: Action::Reject,
                     outbound_action: Action::Reject,
                 },
@@ -233,19 +231,19 @@ pub(crate) fn get_matching_endpoint<'a>(
 /// Resolve an endpoint for a server and apply its action overrides.
 pub(crate) fn resolve_endpoint<'a>(
     parts: &Parts,
-    server_name: &str,
+    external_server_name: &str,
     server_rulesets: &'a BTreeMap<String, CompiledRuleset>,
     default_ruleset: &'a [RegexEndpoint],
 ) -> Option<ResolvedEndpoint<'a>> {
     // Use override rules if the server has a configured ruleset, otherwise fall through to the
     // default ruleset
-    let ruleset = server_rulesets.get(server_name);
+    let ruleset = server_rulesets.get(external_server_name);
     let additional_endpoints = ruleset
         .map(|ruleset| ruleset.additional_endpoints.as_slice())
         .unwrap_or_default();
 
     debug!(
-        "Ruleset lookup for server '{server_name}': found ruleset: {}, additional endpoints: {}",
+        "Ruleset lookup for external server '{external_server_name}': found ruleset: {}, additional endpoints: {}",
         ruleset.is_some(),
         additional_endpoints.len()
     );

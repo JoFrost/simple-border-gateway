@@ -13,11 +13,11 @@ use snafu::{Report, ResultExt, Whatever};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::task::JoinHandle;
 
+use std::collections::BTreeMap;
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
-use std::{collections::BTreeMap, fs};
 
 use ruma::{serde::Base64, signatures::PublicKeyMap};
 use simple_border_gateway::config::BorderGatewayConfig;
@@ -41,10 +41,7 @@ struct Cli {
     #[arg(short = 'c', long, value_name = "FILE", default_value = "config.toml")]
     config_file: PathBuf,
 
-    /// Reject all non-discovery endpoints by default.
-    /// When set, only well known endpoints from the
-    /// default ruleset are allowed (only in inbound mode, everything is blocked by default in outbound mode). All other endpoints require an
-    /// explicit override rule to be permitted.
+    /// Reject every default endpoint that is not explicitly allowed by an override rule.
     #[arg(long, default_value = "false")]
     reject_all_by_default: bool,
 }
@@ -236,9 +233,6 @@ async fn start_services(
 #[tokio::main]
 async fn main() -> Result<(), Whatever> {
     let cli = Cli::parse();
-    // Inbound/Outbound tasks. Made external to be able to abort them on config reload.
-    let mut tasks: Vec<JoinHandle<()>>;
-    let mut old_config: String;
 
     println!("Starting simple-border-gateway");
     let app_log_level = cli.log_level.unwrap_or(
@@ -271,7 +265,7 @@ async fn main() -> Result<(), Whatever> {
     debug!("Crypto provider installed");
 
     if cli.reject_all_by_default {
-        info!("Reject all by default mode enabled. The default ruleset will reject all endpoints (except well known ones in inbound mode), and only endpoints explicitly allowed by override rules will be accepted.");
+        info!("Reject all by default mode enabled. The default ruleset will reject all endpoints, and only endpoints explicitly allowed by override rules will be accepted.");
     }
 
     // Initial loading of the config file
@@ -281,19 +275,10 @@ async fn main() -> Result<(), Whatever> {
         "Initial reading of config file {}",
         cli.config_file.display()
     );
-    let config_toml_str =
-        fs::read_to_string(&cli.config_file).whatever_context("Failed to read config file")?;
-    let mut config: BorderGatewayConfig =
-        toml::from_str(&config_toml_str).whatever_context("Failed to deserialize config file")?;
+    let mut old_config = BorderGatewayConfig::load(&cli.config_file)?;
 
-    let config_dir = cli.config_file.parent().unwrap_or_else(|| Path::new("."));
-    config.load_external_rulesets(config_dir)?;
-
-    // This is just here to avoid to reload the config if it hasn't really changed.
-    // This is very very basic on purpose, and can be improved in many ways if needed.
-    old_config = config_toml_str;
-
-    tasks = start_services(config, &cli).await?;
+    // Inbound/Outbound tasks. Kept so they can be aborted on config reload.
+    let mut tasks: Vec<JoinHandle<()>> = start_services(old_config.clone(), &cli).await?;
 
     let mut hup =
         signal(SignalKind::hangup()).whatever_context("Failed to start SIGHUP handler")?;
@@ -312,36 +297,18 @@ async fn main() -> Result<(), Whatever> {
             // Handle SIGHUP
             _ = hup.recv() => {
                 info!("Received SIGHUP. Reloading config file {}...", cli.config_file.display());
-                let config_toml_str = match fs::read_to_string(&cli.config_file) {
-                    Ok(s) => s,
+                let config = match BorderGatewayConfig::load(&cli.config_file) {
+                    Ok(config) => config,
                     Err(e) => {
-                        error!("Failed to read config file: {}", e);
+                        error!("Failed to load configuration: {}", e);
                         warn!("The services will not be reloaded due to config errors");
                         continue;
                     }
                 };
-                if config_toml_str == old_config {
-                    info!("Config file unchanged, skipping reload");
+                if config == old_config {
+                    info!("Configuration unchanged, skipping reload");
                     continue;
                 }
-                let config: BorderGatewayConfig = match toml::from_str::<BorderGatewayConfig>(&config_toml_str) {
-                    Ok(mut c) => {
-                        let config_dir = cli.config_file.parent().unwrap_or_else(|| Path::new("."));
-                        match c.load_external_rulesets(config_dir) {
-                            Ok(()) => c,
-                            Err(e) => {
-                                error!("Failed to load external rulesets: {}", e);
-                                warn!("The services will not be reloaded due to config errors");
-                                continue;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to deserialize config file: {}", e);
-                        warn!("The services will not be reloaded due to config errors");
-                        continue;
-                    }
-                };
                 // Aborting existing tasks
                 info!("New configuration is valid and loaded. Aborting existing tasks...");
                 for task in tasks.iter() {
@@ -349,7 +316,7 @@ async fn main() -> Result<(), Whatever> {
                 }
                 // Starting new tasks with the new config
                 info!("Starting the services with the new config...");
-                tasks = match start_services(config, &cli).await {
+                tasks = match start_services(config.clone(), &cli).await {
                     Ok(t) => t,
                     Err(e) => {
                         error!("Failed to start services with new config: {}", e);
@@ -357,7 +324,7 @@ async fn main() -> Result<(), Whatever> {
                         exit(1);
                     }
                 };
-                old_config = config_toml_str;
+                old_config = config;
             }
         }
     }

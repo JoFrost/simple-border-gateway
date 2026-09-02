@@ -32,6 +32,10 @@ fn test_ruleset() -> CompiledRuleset {
         )
         .expect("Invalid endpoint definition")],
         action_overrides: BTreeMap::from([
+            (
+                "well_known_server".to_string(),
+                (Action::Reject, Action::Reject),
+            ),
             ("query_profile".to_string(), (Action::Allow, Action::Allow)),
             (
                 "key_v2_query_post".to_string(),
@@ -158,7 +162,7 @@ async fn test_custom_endpoint() {
 
 #[tokio::test]
 async fn test_unauthenticated_endpoint() {
-    let (mock_server, port, _) = setup_mock_gateway(false, false).await;
+    let (mock_server, port, _) = setup_mock_gateway(true, false).await;
 
     let mut mock = mock_server.mock(|when, then| {
         when.method("GET").path("/.well-known/matrix/server");
@@ -179,6 +183,40 @@ async fn test_unauthenticated_endpoint() {
     mock.assert();
 
     mock.delete();
+}
+
+#[tokio::test]
+async fn test_unauthenticated_endpoint_can_be_rejected_by_ruleset() {
+    let (_, port, _) = setup_mock_gateway(false, false).await;
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "http://localhost:{}/.well-known/matrix/server",
+            port
+        ))
+        .header("X-Forwarded-Host", "target.org")
+        .send()
+        .await
+        .expect("well-known request failed");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_reject_all_applies_to_unauthenticated_default_endpoint() {
+    let (_, port, _) = setup_mock_gateway(true, true).await;
+
+    let response = reqwest::Client::new()
+        .get(format!(
+            "http://localhost:{}/.well-known/matrix/server",
+            port
+        ))
+        .header("X-Forwarded-Host", "target.org")
+        .send()
+        .await
+        .expect("well-known request failed");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 fn sign_request(

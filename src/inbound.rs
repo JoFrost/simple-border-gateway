@@ -5,11 +5,11 @@ use crate::{
         util::create_status_response, GatewayDirection, GatewayHandler, RequestOrResponse,
     },
     matrix::{
-        spec::{Action, AuthType, EndpointType, DEFAULT_RULESET},
+        spec::{Action, AuthType, DEFAULT_RULESET},
         util::{create_matrix_response, NameResolver},
         xmatrix::verify_signature,
     },
-    util::{get_matching_endpoint, resolve_endpoint, to_bytes, CompiledRuleset, RequestContext},
+    util::{resolve_endpoint, to_bytes, CompiledRuleset, RequestContext},
 };
 use http::{Request, StatusCode};
 use log::Level;
@@ -22,7 +22,7 @@ pub struct InboundHandler {
     public_key_map: BTreeMap<String, BTreeMap<String, Base64>>,
     /// Per-server-name compiled ruleset.
     server_rulesets: BTreeMap<String, CompiledRuleset>,
-    /// When true, all non well-known endpoint matches are rejected unless an override rule explicitly allows them.
+    /// When true, every default endpoint is rejected unless an override rule explicitly allows it.
     reject_all_by_default: bool,
 }
 
@@ -35,19 +35,7 @@ impl GatewayHandler for InboundHandler {
     ) -> RequestOrResponse {
         let (parts, body) = req.into_parts();
 
-        let mut ctx = RequestContext::new(parts, direction, client_addr, &mut self.name_resolver);
-
-        // Checking Well known endpoints before doing anything. The well known endpoints will ALWAYS be allowed,
-        // as they are essential for federations to work properly.
-        // Those endpoints cannot be overriden by rulesets, at least in inbound mode.
-        if let Some(endpoint) = get_matching_endpoint(&ctx.parts, &DEFAULT_RULESET) {
-            if endpoint.rule.endpoint_type == EndpointType::WellKnown
-                && endpoint.rule.inbound_action == Action::Allow
-            {
-                ctx.log(Level::Info, "forward, well-known endpoint");
-                return Request::from_parts(ctx.parts, body).into();
-            }
-        }
+        let ctx = RequestContext::new(parts, direction, client_addr, &mut self.name_resolver);
 
         // Call the main helper to resolve the endpoint with the active/applicable ruleset (with the default one for fallback), if it exist.
         // This will return on purpose the inbound and outbound action, but we are of course only interested in the inbound action here...
@@ -61,8 +49,7 @@ impl GatewayHandler for InboundHandler {
             return create_status_response(StatusCode::NOT_FOUND).into();
         };
 
-        // When reject all by default is set, we reject non well known endpoint matches
-        // unless an override rule explicitly allowed them.
+        // When reject all by default is set, every default endpoint requires an explicit allow.
         if self.reject_all_by_default && !resolved_endpoint.is_override {
             ctx.log(
                 Level::Warn,
