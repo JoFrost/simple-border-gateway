@@ -6,7 +6,6 @@ use axum::{
 };
 use snafu::{ResultExt, Snafu};
 use tokio::net::TcpListener;
-use tracing::Level;
 
 use crate::http_gateway::{
     GatewayDirection, GatewayForwardError, GatewayHandler, RequestOrResponse,
@@ -32,7 +31,6 @@ pub struct InboundGatewayBuilder<H: GatewayHandler> {
     target_base_urls: BTreeMap<String, String>,
     handler: H,
     http_client: Option<reqwest::Client>,
-    tracing_level: Option<Level>,
 }
 
 impl<H: GatewayHandler> InboundGatewayBuilder<H> {
@@ -46,17 +44,11 @@ impl<H: GatewayHandler> InboundGatewayBuilder<H> {
             target_base_urls,
             handler,
             http_client: None,
-            tracing_level: None,
         }
     }
 
     pub fn with_http_client(mut self, http_client: reqwest::Client) -> Self {
         self.http_client = Some(http_client);
-        self
-    }
-
-    pub fn with_tracing(mut self, level: Level) -> Self {
-        self.tracing_level = Some(level);
         self
     }
 
@@ -73,20 +65,7 @@ impl<H: GatewayHandler> InboundGatewayBuilder<H> {
             .await
             .context(InboundGatewayBindSnafu)?;
 
-        let mut router = Router::new();
-        if let Some(level) = self.tracing_level {
-            router = router.layer(
-                tower_http::trace::TraceLayer::new_for_http()
-                    .make_span_with(tower_http::trace::DefaultMakeSpan::new().level(level))
-                    .on_request(tower_http::trace::DefaultOnRequest::new().level(level))
-                    .on_response(
-                        tower_http::trace::DefaultOnResponse::new()
-                            .level(level)
-                            .include_headers(true),
-                    ),
-            );
-        }
-        router = router.fallback(inbound_handler::<H>);
+        let router = Router::new().fallback(inbound_handler::<H>);
 
         axum::serve(
             listener,

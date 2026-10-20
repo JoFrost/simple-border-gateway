@@ -1,8 +1,9 @@
 // Reference spec v1.15
 
-use crate::util::{Endpoint, EndpointRouter};
+use std::sync::LazyLock;
+
+use crate::endpoint::{Endpoint, EndpointRouter};
 use http::Method;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -29,7 +30,7 @@ pub enum Action {
 // Built-in default ruleset containing all standard Matrix federation endpoints.
 // Override rules from external toml files take precedence over these defaults.
 // Those endpoints are ALL allowed.
-pub(crate) static DEFAULT_ENDPOINTS: Lazy<Vec<Endpoint>> = Lazy::new(|| {
+pub(crate) static DEFAULT_ENDPOINTS: LazyLock<Vec<Endpoint>> = LazyLock::new(|| {
     use AuthType::*;
     use EndpointType::*;
 
@@ -311,7 +312,7 @@ pub(crate) static DEFAULT_ENDPOINTS: Lazy<Vec<Endpoint>> = Lazy::new(|| {
 });
 
 // The default ruleset compiled into a router, used as the fallback for every server.
-pub(crate) static DEFAULT_RULESET: Lazy<EndpointRouter> = Lazy::new(|| {
+pub(crate) static DEFAULT_RULESET: LazyLock<EndpointRouter> = LazyLock::new(|| {
     EndpointRouter::new((*DEFAULT_ENDPOINTS).clone()).expect("Invalid default ruleset")
 });
 

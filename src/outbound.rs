@@ -3,13 +3,12 @@ use std::{
     net::SocketAddr,
 };
 
-use http::{Request, StatusCode};
-use log::Level;
-use reqwest::Body;
-use snafu::{ResultExt, Whatever};
-
 use crate::{
     config::EndpointConfig,
+    endpoint::{
+        CompiledRuleset, EndpointCompileError, EndpointRouter, build_non_matrix_endpoint_routers,
+        resolve_endpoint,
+    },
     http_gateway::{
         GatewayDirection, GatewayHandler, RequestOrResponse, util::create_status_response,
     },
@@ -17,11 +16,11 @@ use crate::{
         spec::{Action, DEFAULT_RULESET, EndpointType},
         util::{NameResolver, create_matrix_response},
     },
-    util::{
-        CompiledRuleset, EndpointRouter, RequestContext, build_non_matrix_endpoint_routers,
-        resolve_endpoint,
-    },
+    request_context::RequestContext,
 };
+use http::{Request, StatusCode};
+use log::Level;
+use reqwest::Body;
 
 #[derive(Clone)]
 pub struct OutboundHandler {
@@ -59,7 +58,7 @@ impl GatewayHandler for OutboundHandler {
             return Request::from_parts(ctx.parts, body).into();
         }
 
-        // Call the main helper to resolve the endpoint with the active/applicable ruleset (with the default one for fallback), if it exist.
+        // Resolve the endpoint with the applicable ruleset, falling back to the default ruleset.
         // This will return on purpose the inbound and outbound action, but we are of course only interested in the outbound action here...
         let Some(resolved_endpoint) = resolve_endpoint(
             &ctx.parts,
@@ -127,13 +126,12 @@ impl OutboundHandler {
         non_matrix_endpoints: Vec<EndpointConfig>,
         server_rulesets: BTreeMap<String, CompiledRuleset>,
         reject_all_by_default: bool,
-    ) -> Result<Self, Whatever> {
+    ) -> Result<Self, EndpointCompileError> {
         let mut allowed_server_names =
             HashSet::from_iter(allowed_federation_domains.values().cloned());
         allowed_server_names.extend(allowed_client_domains.values().cloned());
 
-        let non_matrix_endpoints = build_non_matrix_endpoint_routers(&non_matrix_endpoints)
-            .whatever_context("Failed to build non-matrix endpoints")?;
+        let non_matrix_endpoints = build_non_matrix_endpoint_routers(&non_matrix_endpoints)?;
 
         Ok(Self {
             name_resolver,

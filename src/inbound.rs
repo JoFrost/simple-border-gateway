@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, net::SocketAddr};
 
 use crate::{
+    body::{BodyReadError, to_bytes},
+    endpoint::{CompiledRuleset, resolve_endpoint},
     http_gateway::{
         GatewayDirection, GatewayHandler, RequestOrResponse, util::create_status_response,
     },
@@ -9,7 +11,7 @@ use crate::{
         util::{NameResolver, create_matrix_response},
         xmatrix::verify_signature,
     },
-    util::{BodyReadError, CompiledRuleset, RequestContext, resolve_endpoint, to_bytes},
+    request_context::RequestContext,
 };
 use http::{Request, StatusCode};
 use log::Level;
@@ -37,7 +39,7 @@ impl GatewayHandler for InboundHandler {
 
         let ctx = RequestContext::new(parts, direction, client_addr, &self.name_resolver).await;
 
-        // Call the main helper to resolve the endpoint with the active/applicable ruleset (with the default one for fallback), if it exist.
+        // Resolve the endpoint with the applicable ruleset, falling back to the default ruleset.
         // This will return on purpose the inbound and outbound action, but we are of course only interested in the inbound action here...
         let Some(resolved_endpoint) = resolve_endpoint(
             &ctx.parts,
