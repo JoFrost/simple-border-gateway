@@ -2,10 +2,10 @@
 
 The service exposes two distinct proxy endpoints:
 
-- **Inbound proxy**  
+- **Inbound proxy**
   Entry point for **external homeservers**. All federation requests coming from outside your private network will go through this endpoint.
 
-- **Outbound proxy**  
+- **Outbound proxy**
   HTTP forward proxy. All outbound federation traffic is routed through this proxy so the gateway can validate, filter, or block requests before they leave the restricted network.
 
 ## Deploy the service
@@ -53,40 +53,45 @@ Below is a breakdown of the main sections:
 
 - **`[inbound_proxy]`**: Defines where the gateway listens for **incoming federation requests (from external servers)**.
     - `listen_address`: the network address and port to accept incoming HTTP requests from external homeservers.
+    - `trusted_proxies`: optional IP addresses or CIDR ranges for reverse proxies whose `Forwarded` and `X-Forwarded-*` headers may be trusted. Forwarding headers from every other peer are ignored. A trusted reverse proxy must remove client-supplied forwarding headers and write canonical host/client values (or safely append the verified client IP to its proxy chain).
+    - When no trusted proxy is configured, the inbound destination is taken from the request's `Host` header. A front proxy must therefore preserve the public Matrix host, or be listed in `trusted_proxies` and set a canonical forwarded host.
 - **`[outbound_proxy]`**: Configures the **proxy endpoint** used by internal homeservers for outgoing federation.
 
 - `listen_address`: the address where internal workers connect to send outbound federation traffic.
-- `ca_priv_key` / `ca_cert`:  PEM-encoded private key and certificate for the local Certificate Authority (CA).
-    
+- `ca_priv_key` / `ca_cert`: PEM-encoded private key and certificate for the local Certificate Authority (CA). Relative paths are resolved from the directory containing the main configuration file.
+
     These are used by the outbound proxy to dynamically sign short-lived certificates for target domains, allowing inspection and policy enforcement on encrypted HTTPS traffic. **CA certificates protected with a password are not currently supported**.
-    
-- `additional_root_certs`: optional list of extra CA certificates trusted by the gateway. It can either be a path or the certificate, directly.
+
+- `additional_root_certs`: optional list of extra CA certificates trusted by the gateway. Each value can be inline PEM or a path; relative paths are resolved from the main configuration file's directory.
 - `hazmat_non_matrix_endpoints`: optional list of endpoints allowed on specific non-Matrix domains, besides the federation traffic. Each entry defines an `id`, the destination `domain` it applies to (**required**), a `path` pattern (`{name}` matches a single path segment, a trailing `{*name}` matches all remaining segments) and an optional `method`. A request is forwarded when its destination host matches `domain` and its path (and method, if set) matches the endpoint. This can be useful if other traffic needs to go through the gateway, like push notifications.
 - **`[outbound_proxy.upstream_proxy]`:** (Optional) Defines an upstream proxy if outbound traffic must be chained through another proxy layer.
 - **`[[internal_homeservers]]`:** Declares homeservers that belong to the private federation.
-    
+
     Each entry includes:
-    
+
     - `server_name`: Matrix server name used in federation headers.
     - `federation_domain`: public-facing domain for federation.
     - `target_base_url`: internal base URL where the gateway forwards traffic for that homeserver.
-  
+
 **`[[external_homeservers]]`:** Lists explicitly trusted external homeservers.
 
 - `server_name`: expected Matrix server name.
 - `federation_domain` / `client_domain`: domains used for federation and client APIs.
 - `verify_keys`: mapping of trusted signing keys used to validate incoming requests.
+- `ruleset`: optional ruleset name. A ruleset can be declared inline with `[[rulesets]]` and a `name`, or stored in `<name>.toml` beside the main configuration file.
 
-**You need to specify the federation domains in the configuration as the gateway, in its version 0.1.0, does not rely on the `/.well-known/matrix/server` endpoint.**
+**You need to specify the federation domains in the configuration because the gateway does not discover them from the `/.well-known/matrix/server` endpoint.**
 
-Here is an example of a working configuration: 
+Here is an example of a working configuration:
 
 ```toml
 [inbound_proxy]
-listen_adress = "0.0.0.0:8000"
+listen_address = "0.0.0.0:8000"
+# Configure this only when a reverse proxy sits in front of the gateway.
+trusted_proxies = ["172.18.0.0/16"]
 
 [outbound_proxy]
-listen_adress = "0.0.0.0:3128"
+listen_address = "0.0.0.0:3128"
 ca_priv_key = "ca.pem"
 ca_cert = "ca.crt"
 
@@ -111,6 +116,14 @@ server_name = "matrix.org"
 federation_domain = "matrix-federation.matrix.org"
 client_domain = "matrix-client.matrix.org"
 verify_keys = { "ed25519:a_RXGa" = "l8Hft5qXKn1vfHrg3p4+W8gELQVo8N13JkluMfmn2sQ" }
+ruleset = "matrix-org"
+
+[[rulesets]]
+name = "matrix-org"
+
+[[rulesets.override_rules]]
+endpoint = "query_profile"
+outbound_action = "reject"
 
 ```
 
@@ -130,7 +143,7 @@ location ~ ^/.well-known/matrix/server$ {
 }
 ```
 
-This tells remote homeservers to send all federation traffic to the gateway URL, which corresponds to the inbound side of your gateway. 
+This tells remote homeservers to send all federation traffic to the gateway URL, which corresponds to the inbound side of your gateway.
 
 **Synapse homeservers use HTTPS for inter-server communications, even within the same network. It’s strongly recommended to expose your gateway under a valid TLS-enabled domain name.**
 

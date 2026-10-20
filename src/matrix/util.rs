@@ -93,6 +93,6 @@ pub(crate) fn create_matrix_response<B: From<String>>(
     status: StatusCode,
     errcode: &str,
 ) -> http::Response<B> {
-    #[allow(clippy::unwrap_used, reason = "no intrusted input")]
+    #[allow(clippy::unwrap_used, reason = "no untrusted input")]
     create_matrix_response_with_msg(status, errcode, None).unwrap()
 }

@@ -1,5 +1,6 @@
 # Override rules reference endpoints by their ID.
 # Default endpoint IDs can be found in the documentation / source code (src/matrix/spec.rs).
+# If only one action is set, the other direction inherits that endpoint's built-in action.
 
 [[override_rules]]
 endpoint = "key_v2_query_post"

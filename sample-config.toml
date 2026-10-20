@@ -2,6 +2,8 @@
 
 [inbound_proxy]
 #listen_address = "0.0.0.0:8000"
+# Forwarding headers are ignored unless the immediate peer is listed here.
+#trusted_proxies = ["172.18.0.0/16", "127.0.0.1"]
 additional_root_certs = [
     "root.crt"
 ]
@@ -13,7 +15,7 @@ ca_priv_key = "ca.pem"
 ca_cert = "ca.crt"
 
 additional_root_certs = [
-    "----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+    "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
 ]
 
 [[outbound_proxy.hazmat_non_matrix_endpoints]]
