@@ -1,12 +1,49 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
-use snafu::{ResultExt, Whatever};
+use snafu::Snafu;
 use url::Url;
 
 use crate::matrix::spec::{AuthType, EndpointType};
+
+#[derive(Debug, Snafu)]
+pub enum ConfigError {
+    #[snafu(display("Failed to read config file {}", path.display()))]
+    ReadConfig {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[snafu(display("Failed to deserialize config file {}", path.display()))]
+    DeserializeConfig {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+    #[snafu(display("Invalid ruleset name '{name}': {reason}"))]
+    InvalidRulesetName { name: String, reason: &'static str },
+    #[snafu(display("Ruleset '{name}' is defined more than once"))]
+    DuplicateRuleset { name: String },
+    #[snafu(display("Failed to read ruleset file {}", path.display()))]
+    ReadRuleset {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[snafu(display("Failed to deserialize ruleset file {}", path.display()))]
+    DeserializeRuleset {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+    #[snafu(display(
+        "Ruleset file {} declares name '{declared}', but it was referenced as '{referenced}'",
+        path.display()
+    ))]
+    RulesetNameMismatch {
+        path: PathBuf,
+        declared: String,
+        referenced: String,
+    },
+}
 
 // Lowercase at import time the requested string.
 // This will enforce domains to be lowercase...
@@ -86,9 +123,9 @@ pub struct EndpointConfig {
 pub struct OverrideRuleConfig {
     /// ID of the endpoint to override (from the default ruleset or an additional endpoint).
     pub endpoint: String,
-    /// `"allow"`, `"disallow"` or `"reject"`. Defaults to `"reject/disallow"` when absent.
+    /// `"allow"`, `"disallow"` or `"reject"`. Inherits the endpoint default when absent.
     pub inbound_action: Option<String>,
-    /// `"allow"`, `"disallow"` or `"reject"`. Defaults to `"reject/disallow"` when absent.
+    /// `"allow"`, `"disallow"` or `"reject"`. Inherits the endpoint default when absent.
     pub outbound_action: Option<String>,
 }
 
@@ -97,7 +134,9 @@ pub struct OverrideRuleConfig {
 #[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulesetConfig {
-    #[serde(skip_deserializing, default)]
+    /// Required for rulesets declared inline in the main configuration. External ruleset files
+    /// inherit their name from the filename and may omit this field.
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub additional_endpoints: Vec<EndpointConfig>,
@@ -144,8 +183,6 @@ pub struct OutboundProxyConfig {
     /// Endpoints allowed on specific external (non-Matrix) domains, in addition to the
     /// federation traffic. Each endpoint must set `domain`; requests are forwarded when
     /// both the destination host and the endpoint path (and method, if set) match.
-    ///
-    ///
     #[serde(default)]
     pub hazmat_non_matrix_endpoints: Vec<EndpointConfig>,
 }
@@ -164,54 +201,124 @@ fn default_outbound_proxy_listen_address() -> String {
 
 impl BorderGatewayConfig {
     /// Load the main configuration and every externally referenced ruleset.
-    pub fn load(config_file: &Path) -> Result<Self, Whatever> {
-        let config_toml = fs::read_to_string(config_file).whatever_context(format!(
-            "Failed to read config file {}",
-            config_file.display()
-        ))?;
-        let mut config: Self = toml::from_str(&config_toml).whatever_context(format!(
-            "Failed to deserialize config file {}",
-            config_file.display()
-        ))?;
+    pub fn load(config_file: &Path) -> Result<Self, ConfigError> {
+        let config_toml =
+            fs::read_to_string(config_file).map_err(|source| ConfigError::ReadConfig {
+                path: config_file.to_path_buf(),
+                source,
+            })?;
+        let mut config: Self =
+            toml::from_str(&config_toml).map_err(|source| ConfigError::DeserializeConfig {
+                path: config_file.to_path_buf(),
+                source,
+            })?;
 
         let config_dir = config_file.parent().unwrap_or_else(|| Path::new("."));
         config.load_external_rulesets(config_dir)?;
+        config.resolve_pem_paths(config_dir);
         Ok(config)
     }
 
-    /// Load rulesets from external files based on ruleset names
-    /// Each ruleset is expected to be in a separate file: `ruleset_name.toml`
-    fn load_external_rulesets(&mut self, config_dir: &Path) -> Result<(), Whatever> {
-        let mut loaded_rulesets = Vec::new();
+    /// Load referenced rulesets that are not defined inline. External rulesets live in a
+    /// `ruleset_name.toml` side file beside the main configuration.
+    fn load_external_rulesets(&mut self, config_dir: &Path) -> Result<(), ConfigError> {
+        let mut inline_names = BTreeSet::new();
+        for ruleset in &self.rulesets {
+            validate_ruleset_name(&ruleset.name)?;
+            if !inline_names.insert(ruleset.name.clone()) {
+                return Err(ConfigError::DuplicateRuleset {
+                    name: ruleset.name.clone(),
+                });
+            }
+        }
 
-        // Collect all unique ruleset names referenced by external homeservers
         let mut ruleset_names = BTreeSet::new();
         for homeserver in &self.external_homeservers {
             if let Some(ref name) = homeserver.ruleset {
+                validate_ruleset_name(name)?;
                 ruleset_names.insert(name.clone());
             }
         }
 
-        // Load each ruleset from its external file
         for ruleset_name in ruleset_names {
+            if inline_names.contains(&ruleset_name) {
+                continue;
+            }
+
             let ruleset_path = config_dir.join(format!("{}.toml", ruleset_name));
-            let ruleset_content = fs::read_to_string(&ruleset_path).whatever_context(format!(
-                "Failed to read ruleset file {}",
-                ruleset_path.display()
-            ))?;
+            let ruleset_content =
+                fs::read_to_string(&ruleset_path).map_err(|source| ConfigError::ReadRuleset {
+                    path: ruleset_path.clone(),
+                    source,
+                })?;
             let mut ruleset: RulesetConfig =
-                toml::from_str(&ruleset_content).whatever_context(format!(
-                    "Failed to deserialize ruleset file {}",
-                    ruleset_path.display()
-                ))?;
+                toml::from_str(&ruleset_content).map_err(|source| {
+                    ConfigError::DeserializeRuleset {
+                        path: ruleset_path.clone(),
+                        source,
+                    }
+                })?;
 
-            // Set the name based on the filename
-            ruleset.name = ruleset_name;
-
-            loaded_rulesets.push(ruleset);
+            if !ruleset.name.is_empty() && ruleset.name != ruleset_name {
+                return Err(ConfigError::RulesetNameMismatch {
+                    path: ruleset_path,
+                    declared: ruleset.name,
+                    referenced: ruleset_name,
+                });
+            }
+            ruleset.name = ruleset_name.clone();
+            inline_names.insert(ruleset_name);
+            self.rulesets.push(ruleset);
         }
 
-        self.rulesets = loaded_rulesets;
         Ok(())
     }
+
+    fn resolve_pem_paths(&mut self, config_dir: &Path) {
+        if let Some(inbound) = &mut self.inbound_proxy {
+            resolve_pem_path_list(&mut inbound.additional_root_certs, config_dir);
+        }
+        if let Some(outbound) = &mut self.outbound_proxy {
+            resolve_pem_path(&mut outbound.ca_priv_key, config_dir);
+            resolve_pem_path(&mut outbound.ca_cert, config_dir);
+            resolve_pem_path_list(&mut outbound.additional_root_certs, config_dir);
+        }
+    }
+}
+
+fn validate_ruleset_name(name: &str) -> Result<(), ConfigError> {
+    if name.is_empty() {
+        return Err(ConfigError::InvalidRulesetName {
+            name: name.to_string(),
+            reason: "the name cannot be empty",
+        });
+    }
+    if name.contains('\\') {
+        return Err(ConfigError::InvalidRulesetName {
+            name: name.to_string(),
+            reason: "path separators are not allowed",
+        });
+    }
+
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err(ConfigError::InvalidRulesetName {
+            name: name.to_string(),
+            reason: "the name must be a single path component",
+        });
+    }
+    Ok(())
+}
+
+fn resolve_pem_path_list(values: &mut [String], config_dir: &Path) {
+    for value in values {
+        resolve_pem_path(value, config_dir);
+    }
+}
+
+fn resolve_pem_path(value: &mut String, config_dir: &Path) {
+    if value.trim_start().starts_with("-----BEGIN ") || Path::new(value).is_absolute() {
+        return;
+    }
+    *value = config_dir.join(&*value).to_string_lossy().into_owned();
 }

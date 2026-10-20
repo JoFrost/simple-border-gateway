@@ -1,6 +1,12 @@
-use simple_border_gateway::config::BorderGatewayConfig;
+use simple_border_gateway::cli::Cli;
+use simple_border_gateway::config::{
+    BorderGatewayConfig, ExternalHomeserverConfig, InternalHomeserverConfig,
+};
 use simple_border_gateway::matrix::spec::{AuthType, EndpointType};
+use simple_border_gateway::services::{PrepareServiceError, prepare_services};
+use std::collections::BTreeMap;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn test_base_url_deserialization() {
@@ -209,4 +215,179 @@ fn test_config_rejects_unknown_auth_type_during_loading() {
     .expect("failed to write invalid ruleset");
 
     assert!(BorderGatewayConfig::load(&config_path).is_err());
+}
+
+#[test]
+fn test_config_load_preserves_inline_ruleset() {
+    let config_dir = tempfile::tempdir().expect("failed to create temporary config directory");
+    let config_path = config_dir.path().join("config.toml");
+
+    fs::write(
+        &config_path,
+        r#"
+            internal_homeservers = []
+
+            [[external_homeservers]]
+            server_name = "external.example"
+            federation_domain = "federation.external.example"
+            client_domain = "client.external.example"
+            verify_keys = {}
+            ruleset = "inline"
+
+            [[rulesets]]
+            name = "inline"
+
+            [[rulesets.override_rules]]
+            endpoint = "query_profile"
+            outbound_action = "allow"
+        "#,
+    )
+    .expect("failed to write main config");
+
+    let config = BorderGatewayConfig::load(&config_path).expect("inline ruleset should load");
+    assert_eq!(config.rulesets.len(), 1);
+    assert_eq!(config.rulesets[0].name, "inline");
+    assert_eq!(config.rulesets[0].override_rules.len(), 1);
+    assert!(prepare_services(config, &test_cli()).is_ok());
+}
+
+#[test]
+fn test_config_rejects_ruleset_path_traversal() {
+    let config_dir = tempfile::tempdir().expect("failed to create temporary config directory");
+
+    for (index, name) in ["../outside", "/tmp/outside", "nested/name", "nested\\name"]
+        .into_iter()
+        .enumerate()
+    {
+        let config_path = config_dir.path().join(format!("config-{index}.toml"));
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+                    internal_homeservers = []
+
+                    [[external_homeservers]]
+                    server_name = "external.example"
+                    federation_domain = "federation.external.example"
+                    client_domain = "client.external.example"
+                    verify_keys = {{}}
+                    ruleset = {name:?}
+                "#
+            ),
+        )
+        .expect("failed to write main config");
+
+        assert!(
+            BorderGatewayConfig::load(&config_path).is_err(),
+            "ruleset name {name:?} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn test_pem_paths_are_resolved_relative_to_main_config() {
+    let config_dir = tempfile::tempdir().expect("failed to create temporary config directory");
+    let config_path = config_dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+            internal_homeservers = []
+            external_homeservers = []
+
+            [inbound_proxy]
+            additional_root_certs = ["inbound-root.pem"]
+
+            [outbound_proxy]
+            ca_priv_key = "ca-key.pem"
+            ca_cert = "ca-cert.pem"
+            additional_root_certs = ["outbound-root.pem"]
+        "#,
+    )
+    .expect("failed to write main config");
+
+    let config = BorderGatewayConfig::load(&config_path).expect("config should load");
+    let inbound = config.inbound_proxy.expect("inbound proxy should exist");
+    let outbound = config.outbound_proxy.expect("outbound proxy should exist");
+
+    assert_path_eq(
+        &inbound.additional_root_certs[0],
+        &config_dir.path().join("inbound-root.pem"),
+    );
+    assert_path_eq(&outbound.ca_priv_key, &config_dir.path().join("ca-key.pem"));
+    assert_path_eq(&outbound.ca_cert, &config_dir.path().join("ca-cert.pem"));
+    assert_path_eq(
+        &outbound.additional_root_certs[0],
+        &config_dir.path().join("outbound-root.pem"),
+    );
+}
+
+#[test]
+fn duplicate_homeserver_identifiers_are_startup_errors() {
+    let internal = |server_name: &str, federation_domain: &str| InternalHomeserverConfig {
+        server_name: server_name.to_string(),
+        federation_domain: federation_domain.to_string(),
+        target_base_url: "http://localhost:8008".to_string(),
+    };
+    let external = |server_name: &str, federation_domain: &str, client_domain: &str| {
+        ExternalHomeserverConfig {
+            server_name: server_name.to_string(),
+            federation_domain: federation_domain.to_string(),
+            client_domain: client_domain.to_string(),
+            verify_keys: BTreeMap::new(),
+            ruleset: None,
+        }
+    };
+
+    let duplicate_server = BorderGatewayConfig {
+        internal_homeservers: vec![internal("same.example", "one.example")],
+        external_homeservers: vec![external("same.example", "two.example", "client.example")],
+        inbound_proxy: None,
+        outbound_proxy: None,
+        rulesets: vec![],
+    };
+    assert!(matches!(
+        prepare_services(duplicate_server, &test_cli()),
+        Err(PrepareServiceError::DuplicateServerName { .. })
+    ));
+
+    let duplicate_federation = BorderGatewayConfig {
+        internal_homeservers: vec![internal("one.example", "shared.example")],
+        external_homeservers: vec![external("two.example", "shared.example", "client.example")],
+        inbound_proxy: None,
+        outbound_proxy: None,
+        rulesets: vec![],
+    };
+    assert!(matches!(
+        prepare_services(duplicate_federation, &test_cli()),
+        Err(PrepareServiceError::DuplicateFederationDomain { .. })
+    ));
+
+    let duplicate_client = BorderGatewayConfig {
+        internal_homeservers: vec![],
+        external_homeservers: vec![
+            external("one.example", "fed-one.example", "shared.example"),
+            external("two.example", "fed-two.example", "shared.example"),
+        ],
+        inbound_proxy: None,
+        outbound_proxy: None,
+        rulesets: vec![],
+    };
+    assert!(matches!(
+        prepare_services(duplicate_client, &test_cli()),
+        Err(PrepareServiceError::DuplicateClientDomain { .. })
+    ));
+}
+
+fn assert_path_eq(actual: &str, expected: &Path) {
+    assert_eq!(Path::new(actual), expected);
+}
+
+fn test_cli() -> Cli {
+    Cli {
+        log_level: None,
+        inbound_only: false,
+        outbound_only: false,
+        config_file: PathBuf::from("config.toml"),
+        reject_all_by_default: false,
+    }
 }

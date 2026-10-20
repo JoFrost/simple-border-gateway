@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use log::{LevelFilter, error, info};
+use log::LevelFilter;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -10,12 +10,22 @@ pub struct Cli {
     #[arg(short = 'l', long, value_name = "LEVEL")]
     pub log_level: Option<LevelFilter>,
 
-    /// Only run the inbound proxy, config will be ignored
-    #[arg(short = 'i', long, default_value = "false")]
+    /// Only start the configured inbound proxy
+    #[arg(
+        short = 'i',
+        long,
+        default_value = "false",
+        conflicts_with = "outbound_only"
+    )]
     pub inbound_only: bool,
 
-    /// Only run the outbound proxy, config will be ignored
-    #[arg(short = 'o', long, default_value = "false")]
+    /// Only start the configured outbound proxy
+    #[arg(
+        short = 'o',
+        long,
+        default_value = "false",
+        conflicts_with = "inbound_only"
+    )]
     pub outbound_only: bool,
 
     /// Sets a custom config file
@@ -27,17 +37,22 @@ pub struct Cli {
     pub reject_all_by_default: bool,
 }
 
-pub fn parse_cli() -> Cli {
-    let cli = Cli::parse();
-    if cli.inbound_only && cli.outbound_only {
-        error!("Cannot use --inbound-only and --outbound-only at the same time");
-        std::process::exit(1);
-    }
+pub fn parse_cli() -> Result<Cli, clap::Error> {
+    Cli::try_parse()
+}
 
-    if cli.reject_all_by_default {
-        info!(
-            "Reject all by default mode enabled. The default ruleset will reject all endpoints, and only endpoints explicitly allowed by override rules will be accepted."
-        );
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::{Parser, error::ErrorKind};
+
+    #[test]
+    fn inbound_only_conflicts_with_outbound_only() {
+        let error =
+            Cli::try_parse_from(["simple-border-gateway", "--inbound-only", "--outbound-only"])
+                .err()
+                .expect("conflicting modes should fail parsing");
+
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
     }
-    cli
 }

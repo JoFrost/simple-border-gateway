@@ -7,7 +7,7 @@ use snafu::Snafu;
 
 use crate::{
     config::{EndpointConfig, OverrideRuleConfig},
-    matrix::spec::{Action, AuthType, EndpointType},
+    matrix::spec::{Action, AuthType, DEFAULT_ENDPOINTS, EndpointType},
 };
 
 #[derive(Debug, Snafu)]
@@ -278,14 +278,64 @@ pub fn build_non_matrix_endpoint_routers(
         .collect()
 }
 
-/// Compile override rules into a map of endpoint ID to inbound/outbound actions.
+/// Compile endpoint overrides, rejecting unknown IDs and duplicate rules.
+/// Missing directions inherit the endpoint's built-in action.
 pub fn compile_override_rules(
     rules: &[OverrideRuleConfig],
+    additional_endpoints: &[EndpointConfig],
 ) -> Result<BTreeMap<String, (Action, Action)>, EndpointCompileError> {
+    let mut defaults = BTreeMap::new();
+    for endpoint in DEFAULT_ENDPOINTS.iter() {
+        if defaults
+            .insert(
+                endpoint.id.as_str(),
+                (endpoint.rule.inbound_action, endpoint.rule.outbound_action),
+            )
+            .is_some()
+        {
+            return Err(EndpointCompileError::DuplicateEndpointId {
+                endpoint: endpoint.id.clone(),
+            });
+        }
+    }
+    for endpoint in additional_endpoints {
+        if defaults
+            .insert(endpoint.id.as_str(), (Action::Reject, Action::Reject))
+            .is_some()
+        {
+            return Err(EndpointCompileError::DuplicateEndpointId {
+                endpoint: endpoint.id.clone(),
+            });
+        }
+    }
+
     let mut overrides = BTreeMap::new();
     for rule in rules {
-        let inbound = parse_action(rule.inbound_action.as_deref(), "inbound", &rule.endpoint)?;
-        let outbound = parse_action(rule.outbound_action.as_deref(), "outbound", &rule.endpoint)?;
+        let (default_inbound, default_outbound) = defaults
+            .get(rule.endpoint.as_str())
+            .copied()
+            .ok_or_else(|| EndpointCompileError::UnknownOverrideEndpoint {
+                endpoint: rule.endpoint.clone(),
+            })?;
+
+        if overrides.contains_key(&rule.endpoint) {
+            return Err(EndpointCompileError::DuplicateOverride {
+                endpoint: rule.endpoint.clone(),
+            });
+        }
+
+        let inbound = parse_action(
+            rule.inbound_action.as_deref(),
+            default_inbound,
+            "inbound",
+            &rule.endpoint,
+        )?;
+        let outbound = parse_action(
+            rule.outbound_action.as_deref(),
+            default_outbound,
+            "outbound",
+            &rule.endpoint,
+        )?;
         overrides.insert(rule.endpoint.clone(), (inbound, outbound));
     }
     Ok(overrides)
@@ -293,11 +343,12 @@ pub fn compile_override_rules(
 
 fn parse_action(
     configured: Option<&str>,
+    default: Action,
     direction: &'static str,
     endpoint: &str,
 ) -> Result<Action, EndpointCompileError> {
     match configured {
-        None => Ok(Action::Reject),
+        None => Ok(default),
         Some("allow") => Ok(Action::Allow),
         Some("reject" | "disallow") => Ok(Action::Reject),
         Some(action) => Err(EndpointCompileError::InvalidAction {
@@ -347,4 +398,80 @@ pub(crate) fn resolve_endpoint<'a>(
         outbound_action,
         is_override,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn omitted_override_direction_inherits_endpoint_default() {
+        let overrides = compile_override_rules(
+            &[OverrideRuleConfig {
+                endpoint: "query_profile".to_string(),
+                inbound_action: None,
+                outbound_action: Some("reject".to_string()),
+            }],
+            &[],
+        )
+        .expect("override should compile");
+
+        assert_eq!(
+            overrides.get("query_profile"),
+            Some(&(Action::Allow, Action::Reject))
+        );
+    }
+
+    #[test]
+    fn unknown_and_duplicate_overrides_are_rejected() {
+        let unknown = compile_override_rules(
+            &[OverrideRuleConfig {
+                endpoint: "inbound_acton".to_string(),
+                inbound_action: Some("allow".to_string()),
+                outbound_action: None,
+            }],
+            &[],
+        );
+        assert!(matches!(
+            unknown,
+            Err(EndpointCompileError::UnknownOverrideEndpoint { .. })
+        ));
+
+        let duplicate_rule = OverrideRuleConfig {
+            endpoint: "query_profile".to_string(),
+            inbound_action: Some("allow".to_string()),
+            outbound_action: None,
+        };
+        let duplicate = compile_override_rules(&[duplicate_rule.clone(), duplicate_rule], &[]);
+        assert!(matches!(
+            duplicate,
+            Err(EndpointCompileError::DuplicateOverride { .. })
+        ));
+    }
+
+    #[test]
+    fn additional_endpoint_missing_direction_remains_rejected() {
+        let additional = EndpointConfig {
+            id: "custom".to_string(),
+            path: "/custom".to_string(),
+            method: None,
+            auth_type: AuthType::CheckSignature,
+            endpoint_type: EndpointType::Federation,
+            domain: None,
+        };
+        let overrides = compile_override_rules(
+            &[OverrideRuleConfig {
+                endpoint: "custom".to_string(),
+                inbound_action: Some("allow".to_string()),
+                outbound_action: None,
+            }],
+            &[additional],
+        )
+        .expect("override should compile");
+
+        assert_eq!(
+            overrides.get("custom"),
+            Some(&(Action::Allow, Action::Reject))
+        );
+    }
 }
