@@ -9,9 +9,9 @@ use simple_border_gateway::config::{
     BorderGatewayConfig, EndpointConfig, ExternalHomeserverConfig, InboundProxyConfig,
     InternalHomeserverConfig, OverrideRuleConfig, RulesetConfig,
 };
+use simple_border_gateway::crypto::install_crypto_provider;
 use simple_border_gateway::matrix::spec::{AuthType, EndpointType};
 use simple_border_gateway::services::{prepare_services, spawn_services};
-use simple_border_gateway::util::install_crypto_provider;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -137,6 +137,7 @@ async fn setup_mock_gateway(
         inbound_proxy: Some(InboundProxyConfig {
             listen_address: format!("127.0.0.1:{port}"),
             additional_root_certs: vec![],
+            trusted_proxies: vec![],
         }),
         outbound_proxy: None,
         rulesets,
@@ -172,7 +173,7 @@ async fn test_invalid_endpoint() {
             "http://localhost:{}/_matrix/federation/v1/invalid",
             port
         ))
-        .header("X-Forwarded-Host", "target.org")
+        .header("Host", "target.org")
         .send()
         .await
         .unwrap();
@@ -198,7 +199,7 @@ async fn test_endpoint_postfix_anchor_violation() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .send()
         .await
         .unwrap();
@@ -225,7 +226,7 @@ async fn test_endpoint_prefix_anchor_violation() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .send()
         .await
         .unwrap();
@@ -250,7 +251,7 @@ async fn test_custom_endpoint() {
             "http://localhost:{}/.well-known/matrix/element_call",
             port
         ))
-        .header("X-Forwarded-Host", "target.org")
+        .header("Host", "target.org")
         .send()
         .await
         .unwrap();
@@ -273,7 +274,7 @@ async fn test_unauthenticated_endpoint() {
             "http://localhost:{}/.well-known/matrix/server",
             port
         ))
-        .header("X-Forwarded-Host", "target.org")
+        .header("Host", "target.org")
         .send()
         .await
         .unwrap();
@@ -291,7 +292,7 @@ async fn test_unauthenticated_endpoint_can_be_rejected_by_ruleset() {
             "http://localhost:{}/.well-known/matrix/server",
             port
         ))
-        .header("X-Forwarded-Host", "target.org")
+        .header("Host", "target.org")
         .send()
         .await
         .expect("well-known request failed");
@@ -308,7 +309,7 @@ async fn test_reject_all_applies_to_unauthenticated_default_endpoint() {
             "http://localhost:{}/.well-known/matrix/server",
             port
         ))
-        .header("X-Forwarded-Host", "target.org")
+        .header("Host", "target.org")
         .send()
         .await
         .expect("well-known request failed");
@@ -398,7 +399,7 @@ async fn test_authenticated_endpoint_with_override_ruleset() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .header("Authorization", auth_header.clone())
         .send()
         .await
@@ -440,7 +441,7 @@ async fn test_authenticated_endpoint_with_rejected_default_ruleset() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .header("Authorization", auth_header.clone())
         .send()
         .await
@@ -485,7 +486,7 @@ async fn test_authenticated_endpoint_with_valid_request() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .header("Authorization", auth_header.clone())
         .send()
         .await
@@ -530,7 +531,7 @@ async fn test_authenticated_endpoint_with_mismatched_destination() {
             format!("http://localhost:{}{}", port, path),
         )
         // ...but it is actually sent to the gateway addressed to another server.
-        .header("X-Forwarded-Host", "target.org")
+        .header("Host", "target.org")
         .header("Authorization", auth_header.clone())
         .send()
         .await
@@ -561,7 +562,7 @@ async fn test_authenticated_endpoint_without_destination() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", "target.org")
+        .header("Host", "target.org")
         .header("Authorization", auth_header.clone())
         .send()
         .await
@@ -606,7 +607,7 @@ async fn test_authenticated_endpoint_with_default_ruleset() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .header("Authorization", auth_header.clone())
         .send()
         .await
@@ -647,7 +648,7 @@ async fn test_authenticated_endpoint_with_unauthorized_endpoint() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .header("Authorization", auth_header.clone())
         .send()
         .await
@@ -687,7 +688,7 @@ async fn test_authenticated_endpoint_from_unauthorized_server() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .header("Authorization", auth_header.clone())
         .send()
         .await
@@ -728,7 +729,7 @@ async fn test_authenticated_endpoint_with_invalid_signature() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .header("Authorization", auth_header.clone())
         .send()
         .await
@@ -748,7 +749,7 @@ async fn test_authenticated_endpoint_with_invalid_auth_header() {
             "http://localhost:{}/_matrix/federation/v1/query/profile",
             port
         ))
-        .header("X-Forwarded-Host", "target.org")
+        .header("Host", "target.org")
         .header("Authorization", "X-Matrix wrong")
         .send()
         .await
@@ -768,7 +769,7 @@ async fn test_authenticated_endpoint_without_auth_header() {
             "http://localhost:{}/_matrix/federation/v1/query/profile",
             port
         ))
-        .header("X-Forwarded-Host", "target.org")
+        .header("Host", "target.org")
         .send()
         .await
         .unwrap();
@@ -807,7 +808,7 @@ async fn test_authenticated_endpoint_with_non_utf8_body() {
             method.parse().unwrap(),
             format!("http://localhost:{}{}", port, path),
         )
-        .header("X-Forwarded-Host", destination_name)
+        .header("Host", destination_name)
         .header("Authorization", auth_header.clone())
         // Invalid UTF-8 code point
         .body(Body::from(vec![255]))
@@ -816,4 +817,38 @@ async fn test_authenticated_endpoint_with_non_utf8_body() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_inbound_forwarding_headers_are_canonicalized() {
+    let (mock_server, port, _) = setup_mock_gateway(false, false).await;
+    let path = "/.well-known/matrix/client";
+
+    let mock = mock_server.mock(|when, then| {
+        when.method("GET")
+            .path(path)
+            .header("host", "target.org")
+            .header("x-forwarded-host", "target.org")
+            .header("x-forwarded-for", "127.0.0.1")
+            .header_missing("forwarded")
+            .header_missing("proxy-authorization")
+            .header_missing("x-remove");
+        then.status(200);
+    });
+
+    let response = test_client()
+        .get(format!("http://localhost:{port}{path}"))
+        .header("Host", "target.org")
+        .header("X-Forwarded-Host", "spoofed.example")
+        .header("X-Forwarded-For", "203.0.113.9, 198.51.100.4")
+        .header("Forwarded", "for=203.0.113.9;host=spoofed.example")
+        .header("Proxy-Authorization", "Basic c2VjcmV0")
+        .header("Connection", "x-remove")
+        .header("X-Remove", "secret")
+        .send()
+        .await
+        .expect("request should complete");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    mock.assert();
 }

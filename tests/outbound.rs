@@ -7,9 +7,9 @@ use simple_border_gateway::config::{
     BorderGatewayConfig, EndpointConfig, ExternalHomeserverConfig, OutboundProxyConfig,
     OverrideRuleConfig, RulesetConfig, UpstreamProxyConfig,
 };
+use simple_border_gateway::crypto::install_crypto_provider;
 use simple_border_gateway::matrix::spec::{AuthType, EndpointType};
 use simple_border_gateway::services::{prepare_services, spawn_services};
-use simple_border_gateway::util::install_crypto_provider;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -278,6 +278,37 @@ async fn test_valid_federation_request() {
         .send()
         .await
         .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    mock.assert();
+}
+
+#[tokio::test]
+async fn test_client_proxy_and_forwarding_headers_do_not_reach_origin() {
+    let (mock_server, client) = setup_mock_gateway(None, false).await;
+
+    let mock = mock_server.mock(|when, then| {
+        when.method("GET")
+            .path("/_matrix/federation/v1/query/profile")
+            .header_missing("proxy-authorization")
+            .header_missing("forwarded")
+            .header_missing("x-forwarded-for")
+            .header_missing("x-forwarded-host")
+            .header_missing("x-remove");
+        then.status(200);
+    });
+
+    let response = client
+        .get(mock_server.url("/_matrix/federation/v1/query/profile"))
+        .header("Proxy-Authorization", "Basic c2VjcmV0")
+        .header("X-Forwarded-For", "203.0.113.9")
+        .header("X-Forwarded-Host", "spoofed.example")
+        .header("Forwarded", "for=203.0.113.9;host=spoofed.example")
+        .header("Connection", "x-remove")
+        .header("X-Remove", "secret")
+        .send()
+        .await
+        .expect("request should complete");
 
     assert_eq!(response.status(), StatusCode::OK);
     mock.assert();

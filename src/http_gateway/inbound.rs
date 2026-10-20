@@ -4,12 +4,16 @@ use axum::{
     Router,
     extract::{ConnectInfo, State},
 };
+use ipnet::IpNet;
 use snafu::{ResultExt, Snafu};
 use tokio::net::TcpListener;
 
 use crate::http_gateway::{
     GatewayDirection, GatewayForwardError, GatewayHandler, RequestOrResponse,
-    util::{extract_destination_host, shutdown_signal},
+    util::{
+        InboundRequestMetadata, capture_inbound_request_metadata, extract_destination_host,
+        sanitize_inbound_request_headers, shutdown_signal,
+    },
 };
 
 #[derive(Debug, Snafu)]
@@ -23,6 +27,7 @@ pub struct InboundGatewayBindError {
 struct InboundGatewayState<H: GatewayHandler> {
     http_client: reqwest::Client,
     target_base_urls: BTreeMap<String, String>,
+    trusted_proxies: Vec<IpNet>,
     handler: H,
 }
 
@@ -31,6 +36,7 @@ pub struct InboundGatewayBuilder<H: GatewayHandler> {
     target_base_urls: BTreeMap<String, String>,
     handler: H,
     http_client: Option<reqwest::Client>,
+    trusted_proxies: Vec<IpNet>,
 }
 
 impl<H: GatewayHandler> InboundGatewayBuilder<H> {
@@ -44,11 +50,17 @@ impl<H: GatewayHandler> InboundGatewayBuilder<H> {
             target_base_urls,
             handler,
             http_client: None,
+            trusted_proxies: Vec::new(),
         }
     }
 
     pub fn with_http_client(mut self, http_client: reqwest::Client) -> Self {
         self.http_client = Some(http_client);
+        self
+    }
+
+    pub fn with_trusted_proxies(mut self, trusted_proxies: Vec<IpNet>) -> Self {
+        self.trusted_proxies = trusted_proxies;
         self
     }
 
@@ -58,6 +70,7 @@ impl<H: GatewayHandler> InboundGatewayBuilder<H> {
         let state = InboundGatewayState {
             http_client,
             target_base_urls: self.target_base_urls,
+            trusted_proxies: self.trusted_proxies,
             handler: self.handler,
         };
 
@@ -84,14 +97,14 @@ async fn inbound_handler<H: GatewayHandler>(
     ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
     req: http::Request<axum::body::Body>,
 ) -> http::Response<reqwest::Body> {
-    let req = convert_request(req);
+    let req = convert_request(req, &socket_addr, &state.trusted_proxies);
     let req_or_resp = state
         .handler
         .handle_request(req, GatewayDirection::Inbound, socket_addr)
         .await;
     match req_or_resp {
         RequestOrResponse::Request(req) => {
-            let resp = forward_request(&state, req).await;
+            let resp = forward_request(&state, req, socket_addr).await;
             state
                 .handler
                 .handle_response(resp, GatewayDirection::Inbound)
@@ -104,8 +117,9 @@ async fn inbound_handler<H: GatewayHandler>(
 async fn forward_request<H: GatewayHandler>(
     state: &InboundGatewayState<H>,
     req: http::Request<reqwest::Body>,
+    client_addr: SocketAddr,
 ) -> http::Response<reqwest::Body> {
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
     let dest_host = extract_destination_host(&parts, &GatewayDirection::Inbound);
 
     let Some(target_base_url) = state.target_base_urls.get(&dest_host) else {
@@ -124,6 +138,12 @@ async fn forward_request<H: GatewayHandler>(
         "{target_base_url}{0}",
         parts.uri.path_and_query().map_or("", |p| p.as_str())
     );
+
+    let origin_ip = parts
+        .extensions
+        .get::<InboundRequestMetadata>()
+        .map_or(client_addr.ip(), |metadata| metadata.origin_ip);
+    sanitize_inbound_request_headers(&mut parts.headers, &dest_host, origin_ip);
 
     let req = match state
         .http_client
@@ -162,7 +182,13 @@ async fn forward_request<H: GatewayHandler>(
     }
 }
 
-fn convert_request(req: http::Request<axum::body::Body>) -> http::Request<reqwest::Body> {
-    let (parts, body) = req.into_parts();
+fn convert_request(
+    req: http::Request<axum::body::Body>,
+    client_addr: &SocketAddr,
+    trusted_proxies: &[IpNet],
+) -> http::Request<reqwest::Body> {
+    let (mut parts, body) = req.into_parts();
+    let metadata = capture_inbound_request_metadata(&parts, client_addr, trusted_proxies);
+    parts.extensions.insert(metadata);
     http::Request::from_parts(parts, reqwest::Body::wrap_stream(body.into_data_stream()))
 }

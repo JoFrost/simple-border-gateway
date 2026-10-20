@@ -8,7 +8,8 @@ use rustls::crypto::CryptoProvider;
 use snafu::{ResultExt, Snafu};
 
 use crate::http_gateway::{
-    GatewayDirection, GatewayForwardError, GatewayHandler, RequestOrResponse, util::shutdown_signal,
+    GatewayDirection, GatewayForwardError, GatewayHandler, RequestOrResponse,
+    util::{sanitize_outbound_request_headers, shutdown_signal},
 };
 
 #[derive(Debug, Snafu)]
@@ -108,7 +109,12 @@ impl<H: GatewayHandler> hudsucker::HttpHandler for HandlerAdapter<H> {
             .await;
 
         let resp = match req_or_resp {
-            RequestOrResponse::Request(req) => {
+            RequestOrResponse::Request(mut req) => {
+                let destination_authority = req.uri().authority().cloned();
+                sanitize_outbound_request_headers(
+                    req.headers_mut(),
+                    destination_authority.as_ref(),
+                );
                 let req = match reqwest::Request::try_from(req) {
                     Ok(req) => req,
                     Err(e) => {

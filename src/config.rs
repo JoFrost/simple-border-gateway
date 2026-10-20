@@ -162,6 +162,9 @@ pub struct InboundProxyConfig {
     pub listen_address: String,
     #[serde(default)]
     pub additional_root_certs: Vec<String>,
+    /// Proxy IP addresses or CIDR ranges allowed to supply forwarding headers.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 fn default_inbound_proxy_listen_address() -> String {

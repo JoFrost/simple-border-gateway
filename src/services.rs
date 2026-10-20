@@ -11,12 +11,13 @@ use crate::http_gateway::outbound::{OutboundGatewayBuilder, OutboundGatewayCreat
 use crate::inbound::InboundHandler;
 use crate::matrix::util::NameResolver;
 use crate::outbound::OutboundHandler;
+use ipnet::IpNet;
 use log::{debug, error, info};
 use snafu::{Report, Snafu};
 use tokio::task::JoinHandle;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::AddrParseError;
+use std::net::{AddrParseError, IpAddr};
 use std::process::exit;
 
 use ruma::{serde::Base64, signatures::PublicKeyMap};
@@ -61,6 +62,8 @@ pub enum PrepareServiceError {
         key_id: String,
         details: String,
     },
+    #[snafu(display("Invalid trusted proxy address or network '{value}'"))]
+    InvalidTrustedProxy { value: String },
     #[snafu(display("Failed to create inbound HTTP client"))]
     InboundHttpClient { source: HttpClientError },
     #[snafu(display("Failed to parse inbound listen address '{address}'"))]
@@ -248,6 +251,11 @@ pub fn prepare_services(
                 "Inbound proxy is configured but --outbound-only is set, inbound proxy will not be started"
             );
         } else {
+            let trusted_proxies = inbound_config
+                .trusted_proxies
+                .iter()
+                .map(|value| parse_trusted_proxy(value))
+                .collect::<Result<Vec<_>, _>>()?;
             let http_client = create_http_client(inbound_config.additional_root_certs, None)
                 .map_err(|source| PrepareServiceError::InboundHttpClient { source })?;
             let handler = InboundHandler::new(
@@ -266,7 +274,8 @@ pub fn prepare_services(
 
             services.push(PreparedService::Inbound(
                 InboundGatewayBuilder::new(listen_address, target_base_urls, handler)
-                    .with_http_client(http_client),
+                    .with_http_client(http_client)
+                    .with_trusted_proxies(trusted_proxies),
             ));
             info!("Inbound proxy initialized");
         }
@@ -375,6 +384,15 @@ fn insert_target(
         });
     }
     Ok(())
+}
+
+fn parse_trusted_proxy(value: &str) -> Result<IpNet, PrepareServiceError> {
+    value
+        .parse::<IpNet>()
+        .or_else(|_| value.parse::<IpAddr>().map(IpNet::from))
+        .map_err(|_| PrepareServiceError::InvalidTrustedProxy {
+            value: value.to_string(),
+        })
 }
 
 /// Spawns the given prepared services, returning their task handles.
